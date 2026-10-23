@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr = Field(validation_alias="JWT_SECRET")
     access_token_minutes: int = Field(default=30, ge=5, le=1440, validation_alias="ACCESS_TOKEN_MINUTES")
     cors_origins: str = Field(default="http://localhost:8081,http://localhost:3000", validation_alias="CORS_ORIGINS")
+    whatsapp_access_token: SecretStr | None = Field(default=None, validation_alias="WHATSAPP_ACCESS_TOKEN")
+    whatsapp_phone_number_id: str | None = Field(default=None, validation_alias="WHATSAPP_PHONE_NUMBER_ID")
+    whatsapp_otp_template: str = Field(default="driver_signup_otp", validation_alias="WHATSAPP_OTP_TEMPLATE")
+    whatsapp_api_version: str = Field(default="v23.0", validation_alias="WHATSAPP_API_VERSION")
 
     @field_validator("jwt_secret")
     @classmethod

@@ -75,6 +75,10 @@ Tests use `mongomock` and a dedicated in-memory test database. They do not conne
 | `JWT_SECRET` | Yes | HS256 signing key, minimum 32 characters |
 | `ACCESS_TOKEN_MINUTES` | No | Access token lifetime, defaults to 30 minutes |
 | `CORS_ORIGINS` | No | Explicit comma-separated browser origins |
+| `WHATSAPP_ACCESS_TOKEN` | For driver signup | Meta WhatsApp Cloud API access token; keep it secret |
+| `WHATSAPP_PHONE_NUMBER_ID` | For driver signup | Meta Cloud API phone number ID |
+| `WHATSAPP_OTP_TEMPLATE` | No | Approved WhatsApp template with one body parameter; defaults to `driver_signup_otp` |
+| `WHATSAPP_API_VERSION` | No | Graph API version; defaults to `v23.0` |
 
 For the admin dev server include `http://localhost:5173` in `CORS_ORIGINS`. For Expo web, include the actual browser origin. Physical mobile and native emulator requests do not use browser CORS.
 
@@ -98,6 +102,7 @@ All application routes use the `/api` prefix. Access tokens are sent as `Authori
 
 | Method | Endpoint | Access |
 | --- | --- | --- |
+| POST | `/api/auth/driver/signup/otp` | Public, rate-limited; sends WhatsApp OTP |
 | POST | `/api/auth/driver/signup` | Public, rate-limited |
 | POST | `/api/auth/driver/login` | Public, rate-limited |
 | POST | `/api/auth/admin/login` | Public, rate-limited |
@@ -120,14 +125,22 @@ All application routes use the `/api` prefix. Access tokens are sent as `Authori
 
 Driver status transitions are `accepted -> driver_arriving -> in_progress -> completed`; cancellation is permitted before `in_progress`. Ride claims use a conditional MongoDB update and only the assigned driver can inspect or update an assigned ride.
 
+Request a WhatsApp verification code before signup:
+
+```json
+{"phone": "+14155552671"}
+```
+
+Send this to `POST /api/auth/driver/signup/otp`. Configure an approved WhatsApp authentication template matching `WHATSAPP_OTP_TEMPLATE`, with a body variable for the six-digit code. OTPs expire after five minutes, allow up to five attempts, and are consumed once. The driver profile is inserted only after a valid OTP is provided. Driver signup and login use a phone number; email remains optional for older driver records. Admin login continues to use email.
+
 Signup example:
 
 ```json
 {
   "full_name": "Asha Rao",
-  "email": "asha@example.com",
   "phone": "+14155552671",
   "password": "a-long-unique-passphrase",
+  "otp": "123456",
   "vehicle_type": "car",
   "vehicle_number": "KA01AB1234",
   "driving_license_number": "DL1234567890"
@@ -136,13 +149,13 @@ Signup example:
 
 Signup returns a safe profile with `profile_status: "pending"`; it never returns a password hash or license number. A driver cannot go online or accept rides until an admin approves the account.
 
-Login example:
+Driver login example:
 
 ```json
-{"identifier": "asha@example.com", "password": "a-long-unique-passphrase"}
+{"phone": "+14155552671", "password": "a-long-unique-passphrase"}
 ```
 
-Successful login returns `access_token`, `token_type`, and `expires_in` seconds. Phone login uses E.164 format.
+Successful driver login returns `access_token`, `token_type`, and `expires_in` seconds. Driver phone numbers use E.164 format. Admin login continues to accept an email address.
 
 Admin driver listing supports `page`, `page_size` (maximum 100), `search`, `profile_status`, `availability_status`, and `vehicle_type`. Ride discovery currently uses polling; clients can poll `/api/rides/available` while online. No unauthenticated real-time channel is exposed.
 

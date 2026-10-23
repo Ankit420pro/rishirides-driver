@@ -10,19 +10,27 @@ const green = "#16765d";
 function AuthScreen() {
   const { login, signup, error } = useSession();
   const [registering, setRegistering] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [fields, setFields] = useState({ full_name: "", email: "", phone: "", password: "", vehicle_type: "car", vehicle_number: "", driving_license_number: "" });
+  const [fields, setFields] = useState({ full_name: "", phone: "", password: "", otp: "", vehicle_type: "car", vehicle_number: "", driving_license_number: "" });
   const field = (key: keyof typeof fields, placeholder: string, secureTextEntry = false, keyboardType: "default" | "email-address" | "phone-pad" = "default") => (
-    <TextInput key={key} style={styles.input} placeholder={placeholder} placeholderTextColor="#71807b" value={fields[key]} secureTextEntry={secureTextEntry} keyboardType={keyboardType} autoCapitalize={key === "email" ? "none" : "sentences"} onChangeText={(value) => setFields((current) => ({ ...current, [key]: value }))} />
+    <TextInput key={key} style={styles.input} placeholder={placeholder} placeholderTextColor="#71807b" value={fields[key]} secureTextEntry={secureTextEntry} keyboardType={keyboardType} autoCapitalize="none" onChangeText={(value) => { setFields((current) => ({ ...current, [key]: value })); if (key === "phone") { setOtpSent(false); setFields((current) => ({ ...current, phone: value, otp: "" })); } }} />
   );
   async function submit() {
     setBusy(true);
     try {
       if (registering) {
+        if (!otpSent) {
+          await driverApi.requestSignupOtp(fields.phone);
+          setOtpSent(true);
+          Alert.alert("Code sent", "Check WhatsApp for your verification code.");
+          return;
+        }
         await signup(fields);
         setRegistering(false);
+        setOtpSent(false);
         Alert.alert("Application received", "Your driver profile is pending approval. Sign in to check your status.");
-      } else await login(fields.email || fields.phone, fields.password);
+      } else await login(fields.phone, fields.password);
     } catch { /* Session state exposes the API error. */ }
     finally { setBusy(false); }
   }
@@ -32,15 +40,15 @@ function AuthScreen() {
     <Text style={styles.authTitle}>{registering ? "Start driving." : "Good to see you."}</Text>
     <Text style={styles.authSubtitle}>{registering ? "Create your driver profile to begin verification." : "Sign in to get back on the road."}</Text>
     <View style={styles.form}>
-      {registering && <>{field("full_name", "Full name")}{field("email", "Email address", false, "email-address")}{field("phone", "Phone, e.g. +14155552671", false, "phone-pad")}</>}
-      {!registering && <>{field("email", "Email or phone")}</>}
+      {registering && <>{field("full_name", "Full name")}{field("phone", "Mobile number, e.g. +14155552671", false, "phone-pad")}{otpSent && field("otp", "WhatsApp verification code", false, "phone-pad")}</>}
+      {!registering && field("phone", "Mobile number, e.g. +14155552671", false, "phone-pad")}
       {field("password", "Password", true)}
       {registering && <><View style={styles.vehicleChoices}>{(["auto", "bike", "car"] as const).map((vehicle) => <Pressable key={vehicle} onPress={() => setFields((current) => ({ ...current, vehicle_type: vehicle }))} style={[styles.vehicleChoice, fields.vehicle_type === vehicle && styles.vehicleChoiceSelected]}><Text style={[styles.vehicleChoiceText, fields.vehicle_type === vehicle && styles.vehicleChoiceTextSelected]}>{vehicle.toUpperCase()}</Text></Pressable>)}</View>{field("vehicle_number", "Vehicle registration")}{field("driving_license_number", "Driving license number")}</>}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       <Pressable style={[styles.primaryButton, busy && styles.disabled]} disabled={busy} onPress={submit}>
-        {busy ? <ActivityIndicator color="white" /> : <Text style={styles.primaryText}>{registering ? "Submit application" : "Sign in"}</Text>}
+        {busy ? <ActivityIndicator color="white" /> : <Text style={styles.primaryText}>{registering ? (otpSent ? "Verify & create profile" : "Send WhatsApp code") : "Sign in"}</Text>}
       </Pressable>
-      <Pressable style={styles.linkButton} onPress={() => setRegistering((value) => !value)}><Text style={styles.linkText}>{registering ? "Already registered? Sign in" : "New to RishiRide? Apply to drive"}</Text></Pressable>
+      <Pressable style={styles.linkButton} onPress={() => { setRegistering((value) => !value); setOtpSent(false); }}><Text style={styles.linkText}>{registering ? "Already registered? Sign in" : "New to RishiRide? Apply to drive"}</Text></Pressable>
     </View>
   </SafeAreaView>;
 }

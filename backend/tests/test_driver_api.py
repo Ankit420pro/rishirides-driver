@@ -1,46 +1,75 @@
 from datetime import datetime, timezone
 
 from bson import ObjectId
+from fastapi.testclient import TestClient
+
+from app.main import create_app
 
 
-def signup_payload(email="newdriver@example.com", phone="+14155550101"):
+def signup_payload(phone="+14155550101", otp="123456"):
     return {
         "full_name": "New Driver",
-        "email": email,
         "phone": phone,
         "password": "correct-horse-battery-12",
+        "otp": otp,
         "vehicle_type": "auto",
         "vehicle_number": "KA02CD5678",
         "driving_license_number": "DL9876543210",
     }
 
 
-def driver_token(api, identifier="driver@example.com", password="a-correct-horse-battery"):
-    response = api.post("/api/auth/driver/login", json={"identifier": identifier, "password": password})
+def driver_token(api, phone="+14155550100", password="a-correct-horse-battery"):
+    response = api.post("/api/auth/driver/login", json={"phone": phone, "password": password})
     assert response.status_code == 200
     return response.json()["access_token"]
 
 
-def test_signup_hashes_password_and_returns_safe_profile(api, database):
-    response = api.post("/api/auth/driver/signup", json=signup_payload())
+def test_signup_hashes_password_and_returns_safe_profile(api, database, mock_whatsapp):
+    assert api.post("/api/auth/driver/signup/otp", json={"phone": "+14155550101"}).status_code == 202
+    response = api.post("/api/auth/driver/signup", json=signup_payload(otp=mock_whatsapp["code"]))
     assert response.status_code == 201
     assert response.json()["profile_status"] == "pending"
+    assert response.json()["email"] is None
     assert "password_hash" not in response.json()
     assert "driving_license_number" not in response.json()
-    stored = database.drivers.find_one({"email": "newdriver@example.com"})
+    stored = database.drivers.find_one({"phone": "+14155550101"})
     assert stored["password_hash"] != signup_payload()["password"]
+    assert database.signup_otps.count_documents({}) == 0
 
 
-def test_duplicate_driver_email_or_phone_returns_conflict(api, make_driver):
+def test_duplicate_driver_phone_returns_conflict(api, make_driver):
     make_driver()
-    assert api.post("/api/auth/driver/signup", json=signup_payload()).status_code == 409
-    assert api.post("/api/auth/driver/signup", json=signup_payload("other@example.com", "+14155550100")).status_code == 409
+    assert api.post("/api/auth/driver/signup/otp", json={"phone": "+14155550100"}).status_code == 409
 
 
 def test_driver_login_and_invalid_credentials(api, make_driver):
     make_driver()
-    assert api.post("/api/auth/driver/login", json={"identifier": "+1 (415) 555-0100", "password": "a-correct-horse-battery"}).status_code == 200
-    assert api.post("/api/auth/driver/login", json={"identifier": "driver@example.com", "password": "wrong-password"}).status_code == 401
+    assert api.post("/api/auth/driver/login", json={"phone": "+1 (415) 555-0100", "password": "a-correct-horse-battery"}).status_code == 200
+    assert api.post("/api/auth/driver/login", json={"phone": "+14155550100", "password": "wrong-password"}).status_code == 401
+
+
+def test_signup_requires_valid_single_use_otp(api, database, mock_whatsapp):
+    api.post("/api/auth/driver/signup/otp", json={"phone": "+14155550101"})
+    invalid = api.post("/api/auth/driver/signup", json=signup_payload(otp="000000"))
+    assert invalid.status_code == 400
+    assert database.drivers.count_documents({}) == 0
+    valid = api.post("/api/auth/driver/signup", json=signup_payload(otp=mock_whatsapp["code"]))
+    assert valid.status_code == 201
+    replay = api.post("/api/auth/driver/signup", json=signup_payload(otp=mock_whatsapp["code"]))
+    assert replay.status_code == 400
+
+
+def test_docs_and_health_are_available_when_database_is_offline():
+    def unavailable_database():
+        raise RuntimeError("MongoDB is offline")
+
+    app = create_app(client_factory=unavailable_database)
+    with TestClient(app) as client:
+        assert client.get("/docs").status_code == 200
+        assert client.get("/openapi.json").status_code == 200
+        assert client.get("/health").status_code == 503
+        response = client.post("/api/auth/driver/login", json={"phone": "+14155550100", "password": "pass"})
+        assert response.status_code == 503
 
 
 def test_jwt_protected_profile_and_logout(api, make_driver):
@@ -102,7 +131,7 @@ def test_ride_acceptance_conflict_and_ownership(api, database, make_driver):
     assert accepted.json()["ride_status"] == "accepted"
     assert api.post(f"/api/rides/{ride_id}/accept", headers=headers).status_code == 409
     another_driver = make_driver(email="second@example.com", phone="+14155550102")
-    other_token = api.post("/api/auth/driver/login", json={"identifier": "second@example.com", "password": "a-correct-horse-battery"}).json()["access_token"]
+    other_token = api.post("/api/auth/driver/login", json={"phone": "+14155550102", "password": "a-correct-horse-battery"}).json()["access_token"]
     assert api.patch(f"/api/rides/{ride_id}/status", json={"ride_status": "driver_arriving"},
                      headers={"Authorization": f"Bearer {other_token}"}).status_code == 404
     assert database.rides.find_one({"_id": ride_id})["driver_id"] != another_driver

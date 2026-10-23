@@ -29,6 +29,17 @@ def api(database):
 
 
 @pytest.fixture
+def mock_whatsapp(monkeypatch):
+    sent = {}
+
+    def capture(phone, code):
+        sent.update(phone=phone, code=code)
+
+    monkeypatch.setattr("app.routers.auth.send_signup_otp", capture)
+    return sent
+
+
+@pytest.fixture
 def make_driver(database):
     def create(**overrides):
         values = {

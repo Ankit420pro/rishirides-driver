@@ -15,7 +15,7 @@ def public_driver(driver: dict) -> dict:
     return {
         "id": str(driver["_id"]),
         "full_name": driver["full_name"],
-        "email": driver["email"],
+        "email": driver.get("email"),
         "phone": driver["phone"],
         "vehicle_type": driver["vehicle_type"],
         "vehicle_number": driver["vehicle_number"],
@@ -44,7 +44,7 @@ def update_profile(database, driver: dict, changes: dict) -> dict:
     try:
         database.drivers.update_one({"_id": driver["_id"]}, {"$set": values})
     except DuplicateKeyError:
-        raise HTTPException(status_code=409, detail="Email or phone is already registered") from None
+        raise HTTPException(status_code=409, detail="Phone is already registered") from None
     return database.drivers.find_one({"_id": driver["_id"]})
 
 

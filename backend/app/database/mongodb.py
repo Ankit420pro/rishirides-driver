@@ -1,12 +1,15 @@
 from pymongo import ASCENDING, DESCENDING, MongoClient
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 from app.core.config import get_settings
 
 
 def create_indexes(database) -> None:
     drivers = database["drivers"]
-    drivers.create_index([("email", ASCENDING)], unique=True, name="driver_email_unique")
+    email_index = drivers.index_information().get("driver_email_unique")
+    if email_index and email_index.get("unique") and not email_index.get("sparse"):
+        drivers.drop_index("driver_email_unique")
+    drivers.create_index([("email", ASCENDING)], unique=True, sparse=True, name="driver_email_unique")
     drivers.create_index([("phone", ASCENDING)], unique=True, name="driver_phone_unique")
     drivers.create_index([("profile_status", ASCENDING), ("availability_status", ASCENDING)])
     drivers.create_index([("vehicle_type", ASCENDING), ("created_at", DESCENDING)])
@@ -20,6 +23,7 @@ def create_indexes(database) -> None:
     database["revoked_tokens"].create_index([("jti", ASCENDING)], unique=True)
     database["revoked_tokens"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     database["admin_audit_logs"].create_index([("created_at", DESCENDING)])
+    database["signup_otps"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
 
 
 def connect_database():
@@ -32,4 +36,7 @@ def connect_database():
 
 
 def get_database(request: Request):
-    return request.app.state.database
+    database = request.app.state.database
+    if database is None:
+        raise HTTPException(status_code=503, detail="Database is unavailable; configure MongoDB and retry")
+    return database

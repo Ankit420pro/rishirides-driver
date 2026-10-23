@@ -16,7 +16,7 @@ api.interceptors.request.use(async (config) => {
 export type Driver = {
   id: string;
   full_name: string;
-  email: string;
+  email?: string | null;
   phone: string;
   profile_image_url?: string | null;
   profile_status: "pending" | "approved" | "rejected";
@@ -41,11 +41,12 @@ export const tokenStore = {
 };
 
 export const driverApi = {
-  async login(identifier: string, password: string) {
-    const { data } = await api.post<{ access_token: string }>("/auth/driver/login", { identifier, password });
+  async login(phone: string, password: string) {
+    const { data } = await api.post<{ access_token: string }>("/auth/driver/login", { phone, password });
     await tokenStore.set(data.access_token);
     return data;
   },
+  requestSignupOtp: (phone: string) => api.post("/auth/driver/signup/otp", { phone }),
   signup: (payload: Record<string, string>) => api.post("/auth/driver/signup", payload),
   me: () => api.get<Driver>("/drivers/me"),
   availability: (availability_status: "online" | "offline") => api.patch<Driver>("/drivers/me/availability", { availability_status }),

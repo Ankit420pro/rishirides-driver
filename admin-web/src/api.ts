@@ -16,7 +16,7 @@ api.interceptors.response.use((response) => response, (error) => {
 });
 
 export type Driver = {
-  id: string; full_name: string; email: string; phone: string; vehicle_type: string; vehicle_number: string;
+  id: string; full_name: string; email?: string | null; phone: string; vehicle_type: string; vehicle_number: string;
   profile_status: "pending" | "approved" | "rejected"; availability_status: "online" | "offline" | "on_ride";
   is_verified: boolean; is_suspended: boolean; created_at: string; profile_image_url?: string | null;
 };

@@ -6,7 +6,7 @@ type Session = {
   driver: Driver | null;
   loading: boolean;
   error: string;
-  login: (identifier: string, password: string) => Promise<void>;
+  login: (phone: string, password: string) => Promise<void>;
   signup: (payload: Record<string, string>) => Promise<void>;
   logout: () => Promise<void>;
   refreshDriver: () => Promise<Driver>;
@@ -36,9 +36,9 @@ export function SessionProvider({ children }: PropsWithChildren) {
     return () => { alive = false; };
   }, []);
 
-  async function login(identifier: string, password: string) {
+  async function login(phone: string, password: string) {
     setError("");
-    try { await driverApi.login(identifier, password); setDriver((await driverApi.me()).data); }
+    try { await driverApi.login(phone, password); setDriver((await driverApi.me()).data); }
     catch (cause) { await tokenStore.clear(); setError(messageFrom(cause)); throw cause; }
   }
 

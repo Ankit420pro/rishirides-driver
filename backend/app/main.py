@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,8 @@ from app.database.mongodb import connect_database, create_indexes
 from app.routers import admin, auth, drivers, rides
 from app.routers.auth import limiter
 
+logger = logging.getLogger(__name__)
+
 
 def create_app(database=None, client_factory=connect_database) -> FastAPI:
     settings = get_settings()
@@ -18,9 +21,14 @@ def create_app(database=None, client_factory=connect_database) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if database is None:
-            client, active_database = client_factory()
-            app.state.mongo_client = client
-            app.state.database = active_database
+            app.state.mongo_client = None
+            try:
+                client, active_database = client_factory()
+                app.state.mongo_client = client
+                app.state.database = active_database
+            except Exception:
+                app.state.database = None
+                logger.exception("MongoDB is unavailable; API started in degraded mode")
         else:
             app.state.mongo_client = None
             app.state.database = database
@@ -44,6 +52,8 @@ def create_app(database=None, client_factory=connect_database) -> FastAPI:
 
     @application.get("/health", tags=["health"])
     def health():
+        if application.state.database is None:
+            return JSONResponse(status_code=503, content={"status": "degraded", "database": "unavailable"})
         return {"status": "ok"}
 
     @application.exception_handler(Exception)

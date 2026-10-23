@@ -14,9 +14,9 @@ def normalize_phone(value: str) -> str:
 
 class DriverSignup(BaseModel):
     full_name: str = Field(min_length=2, max_length=100)
-    email: EmailStr
     phone: str = Field(min_length=8, max_length=24)
     password: str = Field(min_length=12, max_length=128)
+    otp: str = Field(min_length=6, max_length=8, pattern=r"^\d+$")
     vehicle_type: VehicleType
     vehicle_number: str = Field(min_length=3, max_length=20)
     driving_license_number: str = Field(min_length=4, max_length=40)
@@ -28,11 +28,6 @@ class DriverSignup(BaseModel):
         if not cleaned:
             raise ValueError("This field cannot be blank")
         return cleaned
-
-    @field_validator("email")
-    @classmethod
-    def normalize_email(cls, value: EmailStr) -> str:
-        return str(value).strip().lower()
 
     @field_validator("phone")
     @classmethod
@@ -46,14 +41,22 @@ class DriverSignup(BaseModel):
 
 
 class DriverLogin(BaseModel):
-    identifier: str = Field(min_length=3, max_length=254)
+    phone: str = Field(min_length=8, max_length=24)
     password: str = Field(min_length=1, max_length=128)
 
-    @field_validator("identifier")
+    @field_validator("phone")
     @classmethod
-    def normalize_identifier(cls, value: str) -> str:
-        cleaned = value.strip()
-        return cleaned.lower() if "@" in cleaned else normalize_phone(cleaned)
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
+
+
+class DriverSignupOtpRequest(BaseModel):
+    phone: str = Field(min_length=8, max_length=24)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
 
 
 class AdminLogin(BaseModel):
@@ -76,7 +79,7 @@ class SafeActor(BaseModel):
     id: str
     role: str
     full_name: str | None = None
-    email: EmailStr
+    email: EmailStr | None = None
     phone: str | None = None
     profile_image_url: str | None = None
     profile_status: str | None = None

@@ -50,7 +50,7 @@ class AvailabilityUpdate(BaseModel):
 class DriverPublic(BaseModel):
     id: str
     full_name: str
-    email: EmailStr
+    email: EmailStr | None = None
     phone: str
     vehicle_type: VehicleType
     vehicle_number: str
