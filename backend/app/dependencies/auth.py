@@ -29,7 +29,11 @@ def get_current_actor(
     if database.revoked_tokens.find_one({"jti": token_id}):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
-    collection = database.admins if role == "admin" else database.drivers if role == "driver" else None
+    collection = (
+        database.admins if role == "admin" else
+        database.drivers if role == "driver" else
+        database.passengers if role == "passenger" else None
+    )
     actor = collection.find_one({"_id": actor_id}) if collection is not None else None
     if not actor:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
@@ -50,6 +54,12 @@ def require_driver(actor: dict = Depends(get_current_actor)) -> dict:
 def require_admin(actor: dict = Depends(get_current_actor)) -> dict:
     if actor["role"] != "admin":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return actor
+
+
+def require_passenger(actor: dict = Depends(get_current_actor)) -> dict:
+    if actor["role"] != "passenger":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Passenger access required")
     return actor
 
 

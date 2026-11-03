@@ -28,6 +28,10 @@ export type Driver = {
 
 export type Ride = {
   id: string;
+  passenger_name?: string | null;
+  passenger_phone?: string | null;
+  passenger_count: number;
+  luggage_count: number;
   pickup_location: string;
   destination: string;
   fare_estimate?: number | null;

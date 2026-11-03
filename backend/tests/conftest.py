@@ -1,4 +1,5 @@
 import os
+from itertools import count
 
 os.environ.setdefault("MONGODB_URI", "mongodb://localhost:27017")
 os.environ.setdefault("MONGODB_DATABASE", "rishiride_test")
@@ -12,6 +13,8 @@ from app.core.security import hash_password
 from app.main import create_app
 from app.services.driver_service import utc_now
 
+_test_client_ips = count(1)
+
 
 @pytest.fixture
 def database():
@@ -24,7 +27,7 @@ def database():
 @pytest.fixture
 def api(database):
     app = create_app(database=database)
-    with TestClient(app) as client:
+    with TestClient(app, client=(f"127.0.0.{next(_test_client_ips)}", 50000)) as client:
         yield client
 
 

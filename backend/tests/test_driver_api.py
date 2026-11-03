@@ -59,6 +59,75 @@ def test_signup_requires_valid_single_use_otp(api, database, mock_whatsapp):
     assert replay.status_code == 400
 
 
+def test_passenger_can_request_ride_and_driver_gets_contact_after_acceptance(api, database, make_driver, mock_whatsapp):
+    otp_request = api.post("/api/auth/passenger/signup/otp", json={"phone": "+14155550111"})
+    assert otp_request.status_code == 202
+    signup = api.post("/api/auth/passenger/signup", json={
+        "full_name": "  Asha Rao  ",
+        "phone": "+14155550111",
+        "password": "a-correct-passenger-password",
+        "otp": mock_whatsapp["code"],
+    })
+    assert signup.status_code == 201
+    assert signup.json()["full_name"] == "Asha Rao"
+    assert "password_hash" not in signup.json()
+    assert database.passengers.find_one({"phone": "+14155550111"})["password_hash"] != "a-correct-passenger-password"
+
+    login = api.post("/api/auth/passenger/login", json={
+        "phone": "+14155550111",
+        "password": "a-correct-passenger-password",
+    })
+    assert login.status_code == 200
+    stored_passenger = database.passengers.find_one({"phone": "+14155550111"})
+    assert stored_passenger["full_name"] == "Asha Rao"
+    assert stored_passenger["phone"] == "+14155550111"
+    assert stored_passenger["last_login_at"] is not None
+    passenger_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert api.get("/api/auth/me", headers=passenger_headers).json()["full_name"] == "Asha Rao"
+    requested = api.post("/api/passengers/me/rides", headers=passenger_headers, json={
+        "pickup_location": "  Central Station ",
+        "destination": "Airport",
+        "pickup_coordinates": {"latitude": 12.97, "longitude": 77.59},
+        "destination_coordinates": {"latitude": 13.2, "longitude": 77.7},
+        "passenger_count": 3,
+        "luggage_count": 2,
+    })
+    assert requested.status_code == 201
+    assert requested.json()["pickup_location"] == "Central Station"
+    assert requested.json()["passenger_count"] == 3
+    assert requested.json()["luggage_count"] == 2
+    assert api.post("/api/passengers/me/rides", headers=passenger_headers, json={
+        "pickup_location": "Station", "destination": "Airport",
+    }).status_code == 409
+    assert api.get("/api/passengers/me/rides", headers=passenger_headers).json()[0]["destination"] == "Airport"
+
+    make_driver()
+    driver_headers = {"Authorization": f"Bearer {driver_token(api)}"}
+    assert api.patch("/api/drivers/me/availability", json={"availability_status": "online"},
+                     headers=driver_headers).status_code == 200
+    ride_id = requested.json()["id"]
+    available = api.get("/api/rides/available", headers=driver_headers).json()
+    assert available[0]["passenger_count"] == 3
+    assert available[0]["luggage_count"] == 2
+    assert available[0]["passenger_id"] is None
+    assert available[0]["passenger_name"] is None
+    assert available[0]["passenger_phone"] is None
+    accepted = api.post(f"/api/rides/{ride_id}/accept", headers=driver_headers)
+    assert accepted.status_code == 200
+    assert accepted.json()["passenger_id"] == signup.json()["id"]
+    assert accepted.json()["passenger_name"] == "Asha Rao"
+    assert accepted.json()["passenger_phone"] == "+14155550111"
+    assert accepted.json()["destination_coordinates"] == {"latitude": 13.2, "longitude": 77.7}
+
+
+def test_passenger_endpoints_require_passenger_role(api, make_driver):
+    make_driver()
+    headers = {"Authorization": f"Bearer {driver_token(api)}"}
+    assert api.post("/api/passengers/me/rides", headers=headers, json={
+        "pickup_location": "Station", "destination": "Airport",
+    }).status_code == 403
+
+
 def test_docs_and_health_are_available_when_database_is_offline():
     def unavailable_database():
         raise RuntimeError("MongoDB is offline")

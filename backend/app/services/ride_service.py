@@ -9,12 +9,22 @@ from app.models.ride import DRIVER_TRANSITIONS, RideStatus
 from app.services.driver_service import ensure_driver_active, object_id_or_404, utc_now
 
 
-def public_ride(ride: dict) -> dict:
+def public_ride(ride: dict, include_passenger_details: bool = True) -> dict:
     result = {key: ride.get(key) for key in (
         "passenger_id", "driver_id", "pickup_location", "destination", "pickup_coordinates",
         "destination_coordinates", "fare_estimate", "ride_status", "requested_at", "accepted_at", "completed_at",
     )}
     result["id"] = str(ride["_id"])
+    passenger = ride.get("passenger", {})
+    if include_passenger_details:
+        result["passenger_name"] = passenger.get("full_name")
+        result["passenger_phone"] = passenger.get("phone")
+    else:
+        result["passenger_id"] = None
+        result["passenger_name"] = None
+        result["passenger_phone"] = None
+    result["passenger_count"] = ride.get("passenger_count", 1)
+    result["luggage_count"] = ride.get("luggage_count", 0)
     for key in ("passenger_id", "driver_id"):
         if result.get(key) is not None:
             result[key] = str(result[key])

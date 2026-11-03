@@ -50,6 +50,45 @@ class DriverLogin(BaseModel):
         return normalize_phone(value)
 
 
+class PassengerSignup(BaseModel):
+    full_name: str = Field(min_length=2, max_length=100)
+    phone: str = Field(min_length=8, max_length=24)
+    password: str = Field(min_length=12, max_length=128)
+    otp: str = Field(min_length=6, max_length=8, pattern=r"^\d+$")
+
+    @field_validator("full_name")
+    @classmethod
+    def trim_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Name cannot be blank")
+        return cleaned
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
+
+
+class PassengerSignupOtpRequest(BaseModel):
+    phone: str = Field(min_length=8, max_length=24)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
+
+
+class PassengerLogin(BaseModel):
+    phone: str = Field(min_length=8, max_length=24)
+    password: str = Field(min_length=1, max_length=128)
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_phone(value)
+
+
 class DriverSignupOtpRequest(BaseModel):
     phone: str = Field(min_length=8, max_length=24)
 

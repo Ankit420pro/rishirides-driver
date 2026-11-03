@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import get_settings
 from app.database.mongodb import connect_database, create_indexes
-from app.routers import admin, auth, drivers, rides
+from app.routers import admin, auth, drivers, passengers, rides
 from app.routers.auth import limiter
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ def create_app(database=None, client_factory=connect_database) -> FastAPI:
     application.include_router(auth.router)
     application.include_router(drivers.router)
     application.include_router(rides.router)
+    application.include_router(passengers.router)
     application.include_router(admin.router)
 
     @application.get("/health", tags=["health"])

@@ -1,6 +1,6 @@
 # RishiRide Driver Management API
 
-The initial checkout contained no existing Expo app, React admin dashboard, passenger API, or application files. This feature adds the driver API plus separate `mobile/` Expo and `admin-web/` React clients. No passenger login or booking workflow is present to reuse; the backend leaves passenger accounts in an external `users` collection untouched and stores ride passenger IDs only as references.
+The backend provides driver and passenger APIs, with separate `mobile/` Expo driver and `admin-web/` React clients. Passenger rides are stored in the same MongoDB database and assigned to drivers through the ride API.
 
 ## Requirements and Setup
 
@@ -89,12 +89,13 @@ There is no refresh-token endpoint: access tokens expire and clients sign in aga
 The API creates indexes at startup:
 
 - `drivers`: unique `email`, unique `phone`, compound approval/availability, vehicle type/registration date.
+- `passengers`: unique `phone`.
 - `rides`: ride status/request time, driver/status, passenger/request time.
 - `admins`: unique email.
 - `revoked_tokens`: unique token ID and TTL expiration.
 - `admin_audit_logs`: descending event time.
 
-Passenger identity is stored only as a ride `passenger_id` reference. Existing passenger auth/collections should be wired into the app's auth dependency when integrated; no duplicate passenger account flow is introduced here.
+Passenger accounts are stored in the `passengers` MongoDB collection and are not deleted on login/logout; successful logins also save `last_login_at`. Each ride stores the passenger ID and a small name/phone snapshot, along with passenger count, luggage count, pickup/drop-off addresses and optional coordinates. Available ride requests hide passenger ID/name/phone. Assigned ride details include them.
 
 ## API
 
@@ -105,6 +106,9 @@ All application routes use the `/api` prefix. Access tokens are sent as `Authori
 | POST | `/api/auth/driver/signup/otp` | Public, rate-limited; sends WhatsApp OTP |
 | POST | `/api/auth/driver/signup` | Public, rate-limited |
 | POST | `/api/auth/driver/login` | Public, rate-limited |
+| POST | `/api/auth/passenger/signup/otp` | Public, rate-limited; sends WhatsApp OTP |
+| POST | `/api/auth/passenger/signup` | Public, rate-limited |
+| POST | `/api/auth/passenger/login` | Public, rate-limited |
 | POST | `/api/auth/admin/login` | Public, rate-limited |
 | GET | `/api/auth/me` | Authenticated |
 | POST | `/api/auth/logout` | Authenticated |
@@ -115,8 +119,10 @@ All application routes use the `/api` prefix. Access tokens are sent as `Authori
 | GET | `/api/drivers/me/rides/history` | Driver's completed/cancelled rides |
 | GET | `/api/drivers/me/stats` | Driver's completed/cancelled ride counts |
 | GET | `/api/rides/available` | Approved online driver |
-| POST | `/api/rides/{ride_id}/accept` | Approved online driver |
+| POST | `/api/rides/{ride_id}/accept` | Approved online driver; accepted ride and passenger ID/details |
 | PATCH | `/api/rides/{ride_id}/status` | Assigned driver |
+| POST | `/api/passengers/me/rides` | Passenger; request a ride |
+| GET | `/api/passengers/me/rides` | Passenger; list their rides |
 | GET | `/api/admin/drivers` | Admin; pagination and filters |
 | GET | `/api/admin/drivers/{driver_id}` | Admin; masked license and ride statistics |
 | PATCH | `/api/admin/drivers/{driver_id}/approval` | Admin; approve/reject and audit |
@@ -156,6 +162,23 @@ Driver login example:
 ```
 
 Successful driver login returns `access_token`, `token_type`, and `expires_in` seconds. Driver phone numbers use E.164 format. Admin login continues to accept an email address.
+
+Passenger signup uses the same WhatsApp OTP flow and password requirements. After passenger login, submit a ride request with pickup/drop-off addresses, optional latitude/longitude coordinates, `passenger_count` (1-8), and `luggage_count` (0-10). The API fills in the passenger name and verified phone from the authenticated account; clients cannot spoof passenger identity in a ride request. Only one active ride per passenger is allowed. Passenger contact details are returned to a driver only after that driver accepts the ride.
+
+For drivers, `POST /api/rides/{ride_id}/accept` returns the accepted ride including `passenger_id`, passenger name, and phone. The driver's `GET /api/drivers/me/rides` returns only their assigned active rides with those details; history is available from `GET /api/drivers/me/rides/history`. Before acceptance, `GET /api/rides/available` intentionally omits passenger identity.
+
+Example passenger ride request:
+
+```json
+{
+  "pickup_location": "Central Station",
+  "destination": "Airport",
+  "pickup_coordinates": {"latitude": 12.97, "longitude": 77.59},
+  "destination_coordinates": {"latitude": 13.2, "longitude": 77.7},
+  "passenger_count": 3,
+  "luggage_count": 2
+}
+```
 
 Admin driver listing supports `page`, `page_size` (maximum 100), `search`, `profile_status`, `availability_status`, and `vehicle_type`. Ride discovery currently uses polling; clients can poll `/api/rides/available` while online. No unauthenticated real-time channel is exposed.
 

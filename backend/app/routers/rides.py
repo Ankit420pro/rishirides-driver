@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.database.mongodb import get_database
 from app.dependencies.auth import require_driver
-from app.models.driver import AvailabilityStatus, ProfileStatus
+from app.models.driver import AvailabilityStatus
 from app.models.ride import RideStatus
 from app.schemas.ride import RidePublic, RideStatusUpdate
 from app.services.driver_service import ensure_driver_active
@@ -21,7 +21,7 @@ def available_rides(
         return []
     rows = database.rides.find({"ride_status": RideStatus.REQUESTED,
                                 "$or": [{"driver_id": None}, {"driver_id": {"$exists": False}}]}).sort("requested_at", 1).limit(limit)
-    return [public_ride(row) for row in rows]
+    return [public_ride(row, include_passenger_details=False) for row in rows]
 
 
 @router.post("/{ride_id}/accept", response_model=RidePublic)

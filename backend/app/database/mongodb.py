@@ -24,6 +24,7 @@ def create_indexes(database) -> None:
     database["revoked_tokens"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     database["admin_audit_logs"].create_index([("created_at", DESCENDING)])
     database["signup_otps"].create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    database["passengers"].create_index([("phone", ASCENDING)], unique=True, name="passenger_phone_unique")
 
 
 def connect_database():

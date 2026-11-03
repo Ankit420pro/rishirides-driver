@@ -13,7 +13,10 @@ from app.core.security import create_access_token, hash_password, verify_passwor
 from app.database.mongodb import get_database
 from app.dependencies.auth import get_current_actor, revocation_document
 from app.models.driver import AvailabilityStatus, ProfileStatus
-from app.schemas.auth import AdminLogin, DriverLogin, DriverSignup, DriverSignupOtpRequest, SafeActor, TokenResponse
+from app.schemas.auth import (
+    AdminLogin, DriverLogin, DriverSignup, DriverSignupOtpRequest, PassengerLogin,
+    PassengerSignup, PassengerSignupOtpRequest, SafeActor, TokenResponse,
+)
 from app.services.driver_service import public_driver, utc_now
 from app.services.whatsapp_service import send_signup_otp
 
@@ -41,15 +44,38 @@ def request_driver_signup_otp(request: Request, payload: DriverSignupOtpRequest,
     digest = _otp_digest(payload.phone, code)
     now = utc_now()
     database.signup_otps.update_one(
-        {"phone": payload.phone},
-        {"$set": {"otp_hash": digest, "attempts": 0, "created_at": now,
+        {"phone": payload.phone, "role": "driver"},
+        {"$set": {"role": "driver", "otp_hash": digest, "attempts": 0, "created_at": now,
                    "expires_at": now + timedelta(minutes=5)}},
         upsert=True,
     )
     try:
         send_signup_otp(payload.phone, code)
     except HTTPException:
-        database.signup_otps.delete_one({"phone": payload.phone, "otp_hash": digest})
+        database.signup_otps.delete_one({"phone": payload.phone, "role": "driver", "otp_hash": digest})
+        raise
+    return {"detail": "Verification code sent to WhatsApp"}
+
+
+@router.post("/passenger/signup/otp", status_code=202)
+@limiter.limit("5/minute")
+def request_passenger_signup_otp(request: Request, payload: PassengerSignupOtpRequest, database=Depends(get_database)):
+    if database.passengers.find_one({"phone": payload.phone}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Phone is already registered")
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    digest = _otp_digest(payload.phone, code)
+    now = utc_now()
+    database.signup_otps.update_one(
+        {"phone": payload.phone, "role": "passenger"},
+        {"$set": {"role": "passenger", "otp_hash": digest, "attempts": 0, "created_at": now,
+                  "expires_at": now + timedelta(minutes=5)}},
+        upsert=True,
+    )
+    try:
+        send_signup_otp(payload.phone, code)
+    except HTTPException:
+        database.signup_otps.delete_one({"phone": payload.phone, "role": "passenger", "otp_hash": digest})
         raise
     return {"detail": "Verification code sent to WhatsApp"}
 
@@ -58,7 +84,7 @@ def request_driver_signup_otp(request: Request, payload: DriverSignupOtpRequest,
 @limiter.limit("5/minute")
 def driver_signup(request: Request, payload: DriverSignup, database=Depends(get_database)):
     now = utc_now()
-    otp = database.signup_otps.find_one({"phone": payload.phone})
+    otp = database.signup_otps.find_one({"phone": payload.phone, "role": "driver"})
     if not otp or otp.get("expires_at") <= now:
         if otp:
             database.signup_otps.delete_one({"_id": otp["_id"]})
@@ -96,6 +122,38 @@ def driver_signup(request: Request, payload: DriverSignup, database=Depends(get_
     return {"id": str(result.inserted_id), "role": "driver", **public_driver(driver)}
 
 
+@router.post("/passenger/signup", response_model=SafeActor, status_code=201)
+@limiter.limit("5/minute")
+def passenger_signup(request: Request, payload: PassengerSignup, database=Depends(get_database)):
+    now = utc_now()
+    otp = database.signup_otps.find_one({"phone": payload.phone, "role": "passenger"})
+    if not otp or otp.get("expires_at") <= now:
+        if otp:
+            database.signup_otps.delete_one({"_id": otp["_id"]})
+        raise HTTPException(status_code=400, detail="Request a new WhatsApp verification code")
+    if otp.get("attempts", 0) >= 5:
+        raise HTTPException(status_code=429, detail="Too many incorrect codes; request a new one")
+    digest = _otp_digest(payload.phone, payload.otp)
+    if not hmac.compare_digest(otp["otp_hash"], digest):
+        database.signup_otps.update_one({"_id": otp["_id"]}, {"$inc": {"attempts": 1}})
+        raise HTTPException(status_code=400, detail="Invalid WhatsApp verification code")
+    if not database.signup_otps.find_one_and_delete({"_id": otp["_id"], "otp_hash": digest}):
+        raise HTTPException(status_code=400, detail="Verification code has already been used")
+
+    passenger = {
+        "full_name": payload.full_name,
+        "phone": payload.phone,
+        "password_hash": hash_password(payload.password),
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        result = database.passengers.insert_one(passenger)
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Phone is already registered") from None
+    return {"id": str(result.inserted_id), "role": "passenger", **passenger_public(passenger)}
+
+
 @router.post("/driver/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def driver_login(request: Request, payload: DriverLogin, database=Depends(get_database)):
@@ -103,6 +161,19 @@ def driver_login(request: Request, payload: DriverLogin, database=Depends(get_da
     if not driver or not verify_password(payload.password, driver.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     return _token_response(str(driver["_id"]), "driver")
+
+
+@router.post("/passenger/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
+def passenger_login(request: Request, payload: PassengerLogin, database=Depends(get_database)):
+    passenger = database.passengers.find_one({"phone": payload.phone})
+    if not passenger or not verify_password(payload.password, passenger.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    database.passengers.update_one(
+        {"_id": passenger["_id"]},
+        {"$set": {"last_login_at": utc_now()}},
+    )
+    return _token_response(str(passenger["_id"]), "passenger")
 
 
 @router.post("/admin/login", response_model=TokenResponse)
@@ -118,7 +189,13 @@ def admin_login(request: Request, payload: AdminLogin, database=Depends(get_data
 def current_profile(actor=Depends(get_current_actor)):
     if actor["role"] == "driver":
         return {"id": str(actor["_id"]), "role": "driver", **public_driver(actor)}
+    if actor["role"] == "passenger":
+        return {"id": str(actor["_id"]), "role": "passenger", **passenger_public(actor)}
     return {"id": str(actor["_id"]), "role": "admin", "email": actor["email"], "full_name": actor.get("full_name")}
+
+
+def passenger_public(passenger: dict) -> dict:
+    return {"full_name": passenger["full_name"], "phone": passenger["phone"]}
 
 
 @router.post("/logout", status_code=204)
