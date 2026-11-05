@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function driverProfile() {
+      return get(/databases/$(database)/documents/drivers/$(request.auth.uid));
+    }
+
+    function approvedAndOnline() {
+      return signedIn()
+        && driverProfile().data.profileStatus == "approved"
+        && driverProfile().data.registrationComplete == true
+        && driverProfile().data.availabilityStatus == "online";
+    }
+
+    match /drivers/{driverId} {
+      allow get: if signedIn() && request.auth.uid == driverId;
+      allow list, create, update, delete: if false;
+
+      match /private/{document=**} {
+        allow read, write: if false;
+      }
+    }
+
+    match /rides/{rideId} {
+      allow get, list: if (approvedAndOnline() && resource.data.status == "requested")
+        || (signedIn() && resource.data.driverUid == request.auth.uid);
+      allow create, update, delete: if false;
+
+      match /private/{document=**} {
+        allow get, list: if signedIn()
+          && get(/databases/$(database)/documents/rides/$(rideId)).data.driverUid == request.auth.uid;
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /driverLocations/{driverId} {
+      allow read, write: if false;
+    }
+
+    match /_privateDriverOtps/{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

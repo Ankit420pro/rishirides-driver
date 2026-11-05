@@ -505,7 +505,7 @@ function RideCard({ ride, onAccept, onStatus, busy }: { ride: Ride; onAccept?: (
 }
 
 export function DashboardScreen() {
-  const { driver, logout, register: actions, refreshDriver } = useSession();
+  const { driver, loading: sessionLoading, logout, register: actions, refreshDriver } = useSession();
   const [rides, setRides] = useState<Ride[]>([]);
   const [activeRides, setActiveRides] = useState<Ride[]>([]);
   const [location, setLocation] = useState<Location.LocationObjectCoords | null>(null);
@@ -540,7 +540,11 @@ export function DashboardScreen() {
   useEffect(() => {
     if (!driver?.uid) return;
     const unsubscribe = onSnapshot(
-      query(collection(db, "rides"), where("driverUid", "==", driver.uid)),
+      query(
+        collection(db, "rides"),
+        where("driverUid", "==", driver.uid),
+        where("status", "in", ["accepted", "driver_arriving", "in_progress"]),
+      ),
       (snapshot) => setActiveRides(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Ride))),
       (error) => setProblem(error.message),
     );
@@ -616,6 +620,9 @@ export function DashboardScreen() {
   const initialRegion = location
     ? { latitude: location.latitude, longitude: location.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
     : { latitude: 12.9716, longitude: 77.5946, latitudeDelta: 0.08, longitudeDelta: 0.08 };
+
+  if (sessionLoading) return <SafeAreaView style={styles.loader}><ActivityIndicator color={yellow} size="large" /></SafeAreaView>;
+  if (!driver) return <Redirect href="/" />;
 
   return (
     <SafeAreaView style={styles.safe}>
