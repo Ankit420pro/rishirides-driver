@@ -1,160 +1,809 @@
-import { useEffect, useState } from "react";
-import { ActivityIndicator, Alert, FlatList, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import * as Location from "expo-location";
+import * as Notifications from "expo-notifications";
+import { LinearGradient } from "expo-linear-gradient";
+import { useEffect, useMemo, useState } from "react";
+import { Controller, useForm } from "react-hook-form";
+import type { Control } from "react-hook-form";
+import { Redirect, useRouter } from "expo-router";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import MapView, { Marker } from "react-native-maps";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Driver, driverApi, Ride } from "../src/api";
-import { useSession } from "../src/session";
+import { z } from "zod";
+import {
+  collection,
+  getDoc,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
+import { ref, uploadBytes } from "firebase/storage";
+import { httpsCallable } from "firebase/functions";
+import { db, functions, storage } from "../src/firebase";
+import { Ride, useSession } from "../src/session";
 
-const ink = "#182624";
-const green = "#16765d";
+const navy = "#101E3B";
+const navySoft = "#1B2C4E";
+const yellow = "#F5BE35";
+const canvas = "#F4F6FA";
+const muted = "#778198";
+const border = "#E5E9F0";
+const white = "#FFFFFF";
 
-function AuthScreen() {
-  const { login, signup, error } = useSession();
-  const [registering, setRegistering] = useState(false);
-  const [otpSent, setOtpSent] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [fields, setFields] = useState({ full_name: "", phone: "", password: "", otp: "", vehicle_type: "car", vehicle_number: "", driving_license_number: "" });
-  const field = (key: keyof typeof fields, placeholder: string, secureTextEntry = false, keyboardType: "default" | "email-address" | "phone-pad" = "default") => (
-    <TextInput key={key} style={styles.input} placeholder={placeholder} placeholderTextColor="#71807b" value={fields[key]} secureTextEntry={secureTextEntry} keyboardType={keyboardType} autoCapitalize="none" onChangeText={(value) => { setFields((current) => ({ ...current, [key]: value })); if (key === "phone") { setOtpSent(false); setFields((current) => ({ ...current, phone: value, otp: "" })); } }} />
+type Photo = ImagePicker.ImagePickerAsset | null;
+const registrationSchema = z.object({
+  fullName: z.string().trim().min(2, "Enter your full name"),
+  phone: z.string().regex(/^\+91[6-9]\d{9}$/, "Enter a valid Indian mobile number"),
+  email: z.string().trim().email("Enter a valid email address"),
+  password: z.string().min(12, "Use at least 12 characters"),
+  confirmPassword: z.string().min(1, "Confirm your password"),
+  licenseNumber: z.string().trim().min(4, "Enter your licence number"),
+  licenseFront: z.custom<Photo>((value) => value !== null, "Add the licence front image"),
+  licenseBack: z.custom<Photo>((value) => value !== null, "Add the licence back image"),
+  aadhaarNumber: z.string().regex(/^\d{12}$/, "Enter a 12-digit Aadhaar number"),
+  aadhaarFront: z.custom<Photo>((value) => value !== null, "Add the Aadhaar front image"),
+  aadhaarBack: z.custom<Photo>((value) => value !== null, "Add the Aadhaar back image"),
+  profilePhoto: z.custom<Photo>((value) => value !== null, "Add a profile photograph"),
+  vehicleType: z.enum(["car", "bike", "auto"]),
+  vehicleNumber: z.string().trim().min(5, "Enter your vehicle registration number"),
+  vehicleModel: z.string().trim().min(2, "Enter your vehicle model"),
+  vehicleColour: z.string().trim().min(2, "Enter your vehicle colour"),
+  vehiclePhoto: z.custom<Photo>((value) => value !== null, "Add a vehicle photograph"),
+  otp: z.string().regex(/^\d{6}$/, "Enter the six-digit code"),
+}).refine((value) => value.password === value.confirmPassword, {
+  message: "Passwords do not match",
+  path: ["confirmPassword"],
+});
+type Registration = z.infer<typeof registrationSchema>;
+
+const defaults: Registration = {
+  fullName: "",
+  phone: "+91",
+  email: "",
+  password: "",
+  confirmPassword: "",
+  licenseNumber: "",
+  licenseFront: null,
+  licenseBack: null,
+  aadhaarNumber: "",
+  aadhaarFront: null,
+  aadhaarBack: null,
+  profilePhoto: null,
+  vehicleType: "car",
+  vehicleNumber: "",
+  vehicleModel: "",
+  vehicleColour: "",
+  vehiclePhoto: null,
+  otp: "",
+};
+
+function BrandMark({ large = false }: { large?: boolean }) {
+  return (
+    <View style={[styles.brandMark, large && styles.brandMarkLarge]}>
+      <MaterialCommunityIcons name="steering" size={large ? 34 : 24} color={navy} />
+      <View style={styles.brandDot} />
+    </View>
   );
+}
+
+function Field({
+  label,
+  control,
+  name,
+  placeholder,
+  secureTextEntry,
+  keyboardType,
+  autoCapitalize = "none",
+}: {
+  label: string;
+  control: Control<Registration>;
+  name: keyof Registration;
+  placeholder: string;
+  secureTextEntry?: boolean;
+  keyboardType?: "default" | "email-address" | "phone-pad" | "number-pad";
+  autoCapitalize?: "none" | "words" | "characters";
+}) {
+  return (
+    <Controller
+      control={control}
+      name={name}
+      render={({ field: { onChange, onBlur, value }, fieldState: { error } }) => (
+        <View style={styles.fieldWrap}>
+          <Text style={styles.fieldLabel}>{label}</Text>
+          <TextInput
+            style={[styles.input, error && styles.inputError]}
+            value={typeof value === "string" ? value : ""}
+            onChangeText={onChange}
+            onBlur={onBlur}
+            placeholder={placeholder}
+            placeholderTextColor="#A0A8B6"
+            secureTextEntry={secureTextEntry}
+            keyboardType={keyboardType ?? "default"}
+            autoCapitalize={autoCapitalize}
+            autoCorrect={false}
+          />
+          {error?.message ? <Text style={styles.fieldError}>{error.message}</Text> : null}
+        </View>
+      )}
+    />
+  );
+}
+
+function PhotoPicker({
+  label,
+  value,
+  onChange,
+  error,
+}: {
+  label: string;
+  value: Photo;
+  onChange: (photo: Photo) => void;
+  error?: string;
+}) {
+  async function choose() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert("Photo access needed", "Allow photo access to upload your verification images.");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (!result.canceled) onChange(result.assets[0]);
+  }
+
+  return (
+    <View style={styles.photoField}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <Pressable onPress={choose} style={[styles.photoButton, error && styles.inputError]}>
+        {value ? (
+          <Image source={{ uri: value.uri }} style={styles.photoPreview} />
+        ) : (
+          <MaterialCommunityIcons name="camera-plus-outline" size={23} color={navy} />
+        )}
+        <Text style={styles.photoButtonText}>{value ? "Change photo" : "Upload photo"}</Text>
+        <MaterialCommunityIcons name="chevron-right" size={20} color={muted} />
+      </Pressable>
+      {error ? <Text style={styles.fieldError}>{error}</Text> : null}
+    </View>
+  );
+}
+
+export function LandingScreen() {
+  const router = useRouter();
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.landing}>
+        <View style={styles.landingBrand}>
+          <BrandMark large />
+          <Text style={styles.brandName}>RISHIIDES</Text>
+          <Text style={styles.brandSub}>DRIVER PARTNER</Text>
+          <Text style={styles.tagline}>Drive. Earn. Grow.</Text>
+        </View>
+        <View style={styles.hero}>
+          <View style={styles.heroPill}><View style={styles.onlineDot} /><Text style={styles.heroPillText}>YOUR NEXT CHAPTER STARTS HERE</Text></View>
+          <Text style={styles.heroTitle}>Your drive.{`\n`}Your <Text style={styles.heroHighlight}>growth.</Text></Text>
+          <Text style={styles.heroCopy}>Take the wheel, set your pace, and earn on every journey with Rishiides.</Text>
+          <View style={styles.heroArt}>
+            <View style={styles.sun} />
+            <View style={styles.road} />
+            <View style={styles.carBody}>
+              <MaterialCommunityIcons name="car-side" size={112} color={navy} />
+              <View style={styles.carShine} />
+            </View>
+            <View style={styles.routeBadge}><MaterialCommunityIcons name="map-marker-path" size={18} color={navy} /><Text style={styles.routeBadgeText}>GO YOUR WAY</Text></View>
+          </View>
+        </View>
+        <View style={styles.landingActions}>
+          <Pressable style={styles.primaryButton} onPress={() => router.push("/register")}>
+            <Text style={styles.primaryButtonText}>Get started</Text>
+            <MaterialCommunityIcons name="arrow-right" size={20} color={navy} />
+          </Pressable>
+          <Pressable style={styles.loginButton} onPress={() => router.push("/login")}>
+            <Text style={styles.loginButtonText}>Already driving with us? <Text style={styles.loginButtonBold}>Log in</Text></Text>
+          </Pressable>
+          <Text style={styles.terms}>By continuing, you agree to our Terms of Service and Privacy Policy.</Text>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+export function LoginScreen() {
+  const router = useRouter();
+  const { login, register, error } = useSession();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
   async function submit() {
     setBusy(true);
+    setMessage("");
     try {
-      if (registering) {
-        if (!otpSent) {
-          await driverApi.requestSignupOtp(fields.phone);
-          setOtpSent(true);
-          Alert.alert("Code sent", "Check WhatsApp for your verification code.");
-          return;
-        }
-        await signup(fields);
-        setRegistering(false);
-        setOtpSent(false);
-        Alert.alert("Application received", "Your driver profile is pending approval. Sign in to check your status.");
-      } else await login(fields.phone, fields.password);
-    } catch { /* Session state exposes the API error. */ }
-    finally { setBusy(false); }
-  }
-  return <SafeAreaView style={styles.authPage}>
-    <View style={styles.brandMark}><Text style={styles.markText}>R</Text></View>
-    <Text style={styles.eyebrow}>RISHIRIDE / DRIVER</Text>
-    <Text style={styles.authTitle}>{registering ? "Start driving." : "Good to see you."}</Text>
-    <Text style={styles.authSubtitle}>{registering ? "Create your driver profile to begin verification." : "Sign in to get back on the road."}</Text>
-    <View style={styles.form}>
-      {registering && <>{field("full_name", "Full name")}{field("phone", "Mobile number, e.g. +14155552671", false, "phone-pad")}{otpSent && field("otp", "WhatsApp verification code", false, "phone-pad")}</>}
-      {!registering && field("phone", "Mobile number, e.g. +14155552671", false, "phone-pad")}
-      {field("password", "Password", true)}
-      {registering && <><View style={styles.vehicleChoices}>{(["auto", "bike", "car"] as const).map((vehicle) => <Pressable key={vehicle} onPress={() => setFields((current) => ({ ...current, vehicle_type: vehicle }))} style={[styles.vehicleChoice, fields.vehicle_type === vehicle && styles.vehicleChoiceSelected]}><Text style={[styles.vehicleChoiceText, fields.vehicle_type === vehicle && styles.vehicleChoiceTextSelected]}>{vehicle.toUpperCase()}</Text></Pressable>)}</View>{field("vehicle_number", "Vehicle registration")}{field("driving_license_number", "Driving license number")}</>}
-      {error ? <Text style={styles.error}>{error}</Text> : null}
-      <Pressable style={[styles.primaryButton, busy && styles.disabled]} disabled={busy} onPress={submit}>
-        {busy ? <ActivityIndicator color="white" /> : <Text style={styles.primaryText}>{registering ? (otpSent ? "Verify & create profile" : "Send WhatsApp code") : "Sign in"}</Text>}
-      </Pressable>
-      <Pressable style={styles.linkButton} onPress={() => { setRegistering((value) => !value); setOtpSent(false); }}><Text style={styles.linkText}>{registering ? "Already registered? Sign in" : "New to RishiRide? Apply to drive"}</Text></Pressable>
-    </View>
-  </SafeAreaView>;
-}
-
-function ApprovalNotice({ status }: { status: Driver["profile_status"] }) {
-  const copy = status === "pending" ? "Your profile is under review. You can go online once approved." : "Your application was not approved. Contact RishiRide support for next steps.";
-  return <View style={[styles.notice, status === "rejected" && styles.noticeBad]}><Text style={styles.noticeTitle}>{status === "pending" ? "Verification in progress" : "Application not approved"}</Text><Text style={styles.noticeCopy}>{copy}</Text></View>;
-}
-
-function RideRow({ ride, onAccept, busy }: { ride: Ride; onAccept?: () => void; busy?: boolean }) {
-  return <View style={styles.rideRow}>
-    <View style={styles.routeLine}><View style={styles.pickupDot} /><View style={styles.routeStem} /><View style={styles.destinationDot} /></View>
-    <View style={styles.routeDetails}><Text style={styles.routeLabel}>PICKUP</Text><Text style={styles.routeText}>{ride.pickup_location}</Text><Text style={[styles.routeLabel, styles.destinationLabel]}>DROP-OFF</Text><Text style={styles.routeText}>{ride.destination}</Text></View>
-    <View style={styles.fareBlock}><Text style={styles.fare}>{ride.fare_estimate == null ? "—" : `₹${ride.fare_estimate.toFixed(0)}`}</Text><Text style={styles.fareLabel}>EST. FARE</Text></View>
-    <View style={styles.passengerDetails}>
-      <Text style={styles.passengerText}>{ride.passenger_count} passenger{ride.passenger_count === 1 ? "" : "s"} · {ride.luggage_count} luggage</Text>
-      {ride.passenger_name ? <Text style={styles.passengerText}>{ride.passenger_name}{ride.passenger_phone ? ` · ${ride.passenger_phone}` : ""}</Text> : null}
-    </View>
-    {onAccept && <Pressable style={styles.acceptButton} disabled={busy} onPress={onAccept}><Text style={styles.acceptText}>{busy ? "Claiming..." : "Accept ride"}</Text></Pressable>}
-  </View>;
-}
-
-function Dashboard({ driver }: { driver: Driver }) {
-  const { logout, refreshDriver } = useSession();
-  const [available, setAvailable] = useState<Ride[]>([]);
-  const [active, setActive] = useState<Ride[]>([]);
-  const [history, setHistory] = useState<Ride[]>([]);
-  const [completed, setCompleted] = useState(0);
-  const [busyRide, setBusyRide] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [message, setMessage] = useState("");
-  const approved = driver.profile_status === "approved";
-
-  async function load() {
-    try {
-      const currentDriver = await refreshDriver();
-      const [activeResult, historyResult, statsResult] = await Promise.all([driverApi.activeRides(), driverApi.rideHistory(), driverApi.stats()]);
-      setActive(activeResult.data); setHistory(historyResult.data); setCompleted(statsResult.data.completed_rides);
-      if (currentDriver.profile_status === "approved" && currentDriver.availability_status === "online") setAvailable((await driverApi.availableRides()).data);
-      else setAvailable([]);
-      setMessage("");
+      await login(email.trim().toLowerCase(), password);
+      router.replace("/dashboard");
     } catch (cause) {
-      setMessage("Live data could not be refreshed. Pull down to retry.");
-    } finally { setLoading(false); setRefreshing(false); }
+      setMessage(cause instanceof Error ? cause.message : "We couldn't sign you in. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
+
+  async function resetPassword() {
+    if (!email.trim()) {
+      setMessage("Enter your email address first.");
+      return;
+    }
+    try {
+      await register.resetPassword(email.trim().toLowerCase());
+      setMessage("Password reset email sent. Check your inbox.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Password reset could not be sent.");
+    }
+  }
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingView style={styles.authScreen} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <Pressable style={styles.backButton} onPress={() => router.back()}><MaterialCommunityIcons name="arrow-left" size={22} color={navy} /></Pressable>
+        <BrandMark />
+        <Text style={styles.authTitle}>Welcome back</Text>
+        <Text style={styles.authSubtitle}>Log in to get back on the road.</Text>
+        <View style={styles.formCard}>
+          <Text style={styles.fieldLabel}>Email address</Text>
+          <TextInput style={styles.input} value={email} onChangeText={setEmail} placeholder="you@example.com" placeholderTextColor="#A0A8B6" keyboardType="email-address" autoCapitalize="none" />
+          <Text style={[styles.fieldLabel, styles.spacedLabel]}>Password</Text>
+          <TextInput style={styles.input} value={password} onChangeText={setPassword} placeholder="Your password" placeholderTextColor="#A0A8B6" secureTextEntry autoCapitalize="none" />
+          <Pressable style={styles.forgot} onPress={() => void resetPassword()}><Text style={styles.forgotText}>Forgot password?</Text></Pressable>
+          {message || error ? <Text style={styles.fieldError}>{message || error}</Text> : null}
+          <Pressable style={[styles.primaryButton, busy && styles.disabled]} disabled={busy} onPress={() => void submit()}>
+            {busy ? <ActivityIndicator color={navy} /> : <><Text style={styles.primaryButtonText}>Log in</Text><MaterialCommunityIcons name="arrow-right" size={20} color={navy} /></>}
+          </Pressable>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+export function RegistrationScreen() {
+  const router = useRouter();
+  const { register: actions } = useSession();
+  const [step, setStep] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [otpSent, setOtpSent] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [verifiedAccount, setVerifiedAccount] = useState<{ customToken: string; uid: string } | null>(null);
+  const {
+    control,
+    getValues,
+    trigger,
+    handleSubmit,
+  } = useForm<Registration>({
+    defaultValues: defaults,
+    resolver: zodResolver(registrationSchema),
+    mode: "onTouched",
+  });
 
   useEffect(() => {
-    void load();
-    const interval = setInterval(() => { void load(); }, 12000);
-    return () => clearInterval(interval);
-  }, [driver.availability_status, driver.profile_status]);
+    if (!cooldown) return;
+    const timer = setTimeout(() => setCooldown((value) => Math.max(0, value - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
 
-  async function toggleAvailability(online: boolean) {
-    try { await driverApi.availability(online ? "online" : "offline"); await load(); }
-    catch (cause) { Alert.alert("Could not change availability", "Only approved drivers can go online. Finish any active ride before going offline."); }
+  const steps = ["Personal", "Documents", "Vehicle", "Verify"];
+  const fields: (keyof Registration)[][] = [
+    ["fullName", "phone", "email", "password", "confirmPassword"],
+    ["licenseNumber", "licenseFront", "licenseBack", "aadhaarNumber", "aadhaarFront", "aadhaarBack", "profilePhoto"],
+    ["vehicleType", "vehicleNumber", "vehicleModel", "vehicleColour", "vehiclePhoto"],
+    ["otp"],
+  ];
+
+  async function next() {
+    const valid = await trigger(fields[step]);
+    if (valid) {
+      setErrorMessage("");
+      setStep((value) => Math.min(value + 1, 3));
+    }
   }
 
-  async function accept(ride: Ride) {
-    setBusyRide(ride.id);
-    try { await driverApi.acceptRide(ride.id); await load(); }
-    catch { Alert.alert("Ride unavailable", "Another driver may have accepted this ride. Requests have been refreshed."); await load(); }
-    finally { setBusyRide(""); }
+  async function sendOtp() {
+    if (cooldown > 0) return;
+    const valid = await trigger(["email", "fullName"]);
+    if (!valid) {
+      setStep(0);
+      return;
+    }
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      await actions.requestOtp(getValues("email").trim().toLowerCase(), getValues("fullName").trim());
+      setOtpSent(true);
+      setCooldown(60);
+    } catch (cause) {
+      setErrorMessage(cause instanceof Error ? cause.message : "We couldn't send your code.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function setRideStatus(ride: Ride, next: Ride["ride_status"]) {
-    try { await driverApi.updateRide(ride.id, next); await load(); }
-    catch { Alert.alert("Status not updated", "Refresh the ride and try again."); }
+  async function finish(values: Registration) {
+    if (!otpSent) {
+      setErrorMessage("Request an email code before verifying your account.");
+      return;
+    }
+    setBusy(true);
+    setErrorMessage("");
+    try {
+      const account = verifiedAccount ?? await actions.verifyOtp({
+        email: values.email.trim().toLowerCase(),
+        otp: values.otp,
+        fullName: values.fullName.trim(),
+        phone: values.phone,
+        password: values.password,
+        vehicleType: values.vehicleType,
+        vehicleNumber: values.vehicleNumber.trim().toUpperCase(),
+        vehicleModel: values.vehicleModel.trim(),
+        vehicleColour: values.vehicleColour.trim(),
+        licenseNumber: values.licenseNumber.trim().toUpperCase(),
+        aadhaarNumber: values.aadhaarNumber,
+      });
+      if (!verifiedAccount) setVerifiedAccount(account);
+      await actions.signInWithToken(account.customToken);
+      const images: Record<string, Photo> = {
+        licenseFront: values.licenseFront,
+        licenseBack: values.licenseBack,
+        aadhaarFront: values.aadhaarFront,
+        aadhaarBack: values.aadhaarBack,
+        profilePhoto: values.profilePhoto,
+        vehiclePhoto: values.vehiclePhoto,
+      };
+      const paths: Record<string, string> = {};
+      for (const [name, photo] of Object.entries(images)) {
+        if (!photo) throw new Error(`Missing ${name} image`);
+        const blob = await (await fetch(photo.uri)).blob();
+        const path = `drivers/${account.uid}/verification/${name}`;
+        await uploadBytes(ref(storage, path), blob, { contentType: photo.mimeType ?? "image/jpeg" });
+        paths[name] = path;
+      }
+      await actions.finalizeRegistration({
+        uid: account.uid,
+        paths,
+        vehicleType: values.vehicleType,
+        vehicleNumber: values.vehicleNumber.trim().toUpperCase(),
+        vehicleModel: values.vehicleModel.trim(),
+        vehicleColour: values.vehicleColour.trim(),
+        licenseNumber: values.licenseNumber.trim().toUpperCase(),
+        aadhaarNumber: values.aadhaarNumber,
+      });
+      actions.completeRegistration();
+      router.replace("/dashboard");
+    } catch (cause) {
+      setErrorMessage(cause instanceof Error ? cause.message : "Registration could not be completed.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  const current = active[0];
-  return <SafeAreaView style={styles.page}>
-    <FlatList
-      data={available}
-      keyExtractor={(ride) => ride.id}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void load(); }} tintColor={green} />}
-      ListHeaderComponent={<>
-        <View style={styles.topBar}><View><Text style={styles.eyebrow}>RISHIRIDE / DRIVER</Text><Text style={styles.welcome}>Hello, {driver.full_name.split(" ")[0]}</Text></View><Pressable style={styles.logoutButton} onPress={() => void logout()}><Text style={styles.logoutText}>Log out</Text></Pressable></View>
-        <View style={styles.profileStrip}>
-          {driver.profile_image_url ? <Image source={{ uri: driver.profile_image_url }} style={styles.avatar} /> : <View style={styles.avatarFallback}><Text style={styles.avatarInitial}>{driver.full_name.charAt(0).toUpperCase()}</Text></View>}
-          <View style={styles.profileInfo}><Text style={styles.profileName}>{driver.full_name}</Text><Text style={styles.vehicle}>{driver.vehicle_type.toUpperCase()} · {driver.vehicle_number}</Text></View>
-          <View style={[styles.statusTag, { backgroundColor: approved ? "#e3f4ed" : driver.profile_status === "pending" ? "#fff1d7" : "#fde8e5" }]}><Text style={[styles.statusTagText, { color: approved ? green : driver.profile_status === "pending" ? "#9b6417" : "#b14135" }]}>{driver.profile_status}</Text></View>
-        </View>
-        {approved ? <View style={styles.availabilityBar}><View><Text style={styles.availTitle}>{driver.availability_status === "online" ? "You're online" : driver.availability_status === "on_ride" ? "On a ride" : "You're offline"}</Text><Text style={styles.availHint}>{driver.availability_status === "online" ? "Ride requests are coming in" : "Switch on when you're ready"}</Text></View><Switch value={driver.availability_status !== "offline"} disabled={driver.availability_status === "on_ride"} onValueChange={toggleAvailability} trackColor={{ false: "#ccd5d0", true: green }} thumbColor="white" /></View> : <ApprovalNotice status={driver.profile_status} />}
-        <View style={styles.statsRow}><View style={styles.stat}><Text style={styles.statNumber}>{completed}</Text><Text style={styles.statLabel}>COMPLETED</Text></View><View style={styles.statDivider} /><View style={styles.stat}><Text style={styles.statNumber}>{history.length}</Text><Text style={styles.statLabel}>RECENT TRIPS</Text></View><View style={styles.statDivider} /><View style={styles.stat}><Text style={styles.statNumber}>{active.length}</Text><Text style={styles.statLabel}>ACTIVE</Text></View></View>
-        {current ? <View style={styles.section}><Text style={styles.sectionTitle}>Current ride</Text><RideRow ride={current} busy={false} onAccept={() => undefined} /><View style={styles.statusActions}>{current.ride_status === "accepted" && <Pressable style={styles.primaryButton} onPress={() => void setRideStatus(current, "driver_arriving")}><Text style={styles.primaryText}>I'm on my way</Text></Pressable>}{current.ride_status === "driver_arriving" && <Pressable style={styles.primaryButton} onPress={() => void setRideStatus(current, "in_progress")}><Text style={styles.primaryText}>Start ride</Text></Pressable>}{current.ride_status === "in_progress" && <Pressable style={styles.primaryButton} onPress={() => void setRideStatus(current, "completed")}><Text style={styles.primaryText}>Complete ride</Text></Pressable>}{["accepted", "driver_arriving"].includes(current.ride_status) && <Pressable style={styles.cancelButton} onPress={() => void setRideStatus(current, "cancelled")}><Text style={styles.cancelText}>Cancel ride</Text></Pressable>}</View></View> : null}
-        <View style={styles.sectionHeader}><Text style={styles.sectionTitle}>Ride requests</Text><Text style={styles.liveLabel}>POLLING · 12 SEC</Text></View>
-        {message ? <Text style={styles.error}>{message}</Text> : null}
-        {loading ? <ActivityIndicator style={{ margin: 28 }} color={green} /> : null}
-        {!loading && available.length === 0 ? <View style={styles.empty}><Text style={styles.emptyTitle}>{driver.availability_status === "online" ? "No requests right now" : "Go online to see requests"}</Text><Text style={styles.emptyCopy}>New trip requests will appear here.</Text></View> : null}
-      </>}
-      renderItem={({ item }) => <RideRow ride={item} busy={busyRide === item.id} onAccept={() => void accept(item)} />}
-      ListFooterComponent={<View style={styles.section}><Text style={styles.sectionTitle}>Recent trips</Text>{history.slice(0, 6).map((ride) => <View key={ride.id} style={styles.historyRow}><View><Text style={styles.historyRoute}>{ride.pickup_location} to {ride.destination}</Text><Text style={styles.historyStatus}>{ride.ride_status} · {ride.fare_estimate == null ? "Fare unavailable" : `₹${ride.fare_estimate.toFixed(0)}`}</Text></View><Text style={styles.historyCheck}>{ride.ride_status === "completed" ? "DONE" : "CANCELLED"}</Text></View>)}{history.length === 0 && <Text style={styles.emptyCopy}>Completed trips will show here.</Text>}</View>}
+  const photo = (name: keyof Registration, label: string) => (
+    <Controller
+      control={control}
+      name={name}
+      render={({ field: { value, onChange }, fieldState: { error } }) => (
+        <PhotoPicker label={label} value={value as Photo} onChange={onChange} error={error?.message} />
+      )}
     />
-  </SafeAreaView>;
+  );
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingView style={styles.registrationScreen} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={styles.registrationHeader}>
+          <Pressable style={styles.backButton} onPress={step ? () => setStep((value) => value - 1) : () => router.back()}>
+            <MaterialCommunityIcons name="arrow-left" size={22} color={navy} />
+          </Pressable>
+          <View style={styles.stepCount}><Text style={styles.stepCountText}>{step + 1} <Text style={styles.stepCountMuted}>/ 4</Text></Text></View>
+        </View>
+        <View style={styles.progressTrack}>{steps.map((item, index) => <View key={item} style={[styles.progressSegment, index <= step && styles.progressActive]} />)}</View>
+        <ScrollView contentContainerStyle={styles.registrationContent} keyboardShouldPersistTaps="handled">
+          <Text style={styles.stepEyebrow}>DRIVER APPLICATION · {steps[step].toUpperCase()}</Text>
+          <Text style={styles.authTitle}>{["Let's get to know you.", "A few important documents.", "Tell us about your ride.", "Verify your email."][step]}</Text>
+          <Text style={styles.authSubtitle}>{["Your details help us set up your driver profile.", "Your information is encrypted and used only for verification.", "Make sure your vehicle details match your documents.", "We'll send a six-digit code to confirm your email."][step]}</Text>
+          <View style={styles.formCard}>
+            {step === 0 && <>
+              <Field control={control} name="fullName" label="Full name" placeholder="As shown on your ID" autoCapitalize="words" />
+              <Field control={control} name="phone" label="Mobile number" placeholder="+91 98765 43210" keyboardType="phone-pad" />
+              <Field control={control} name="email" label="Email address" placeholder="you@example.com" keyboardType="email-address" />
+              <Field control={control} name="password" label="Create password" placeholder="At least 12 characters" secureTextEntry />
+              <Field control={control} name="confirmPassword" label="Confirm password" placeholder="Re-enter your password" secureTextEntry />
+            </>}
+            {step === 1 && <>
+              <Field control={control} name="licenseNumber" label="Driving licence number" placeholder="Enter licence number" autoCapitalize="characters" />
+              {photo("licenseFront", "Driving licence · front")}
+              {photo("licenseBack", "Driving licence · back")}
+              <Field control={control} name="aadhaarNumber" label="Aadhaar number" placeholder="12-digit Aadhaar number" keyboardType="number-pad" />
+              {photo("aadhaarFront", "Aadhaar card · front")}
+              {photo("aadhaarBack", "Aadhaar card · back")}
+              {photo("profilePhoto", "Profile photograph")}
+              <View style={styles.privacyNote}><MaterialCommunityIcons name="lock-outline" size={17} color={navySoft} /><Text style={styles.privacyText}>Your identity documents are private and visible only to authorized verification staff.</Text></View>
+            </>}
+            {step === 2 && <>
+              <Text style={styles.fieldLabel}>Vehicle type</Text>
+              <Controller control={control} name="vehicleType" render={({ field: { value, onChange } }) => (
+                <View style={styles.vehicleTypes}>{(["car", "bike", "auto"] as const).map((type) => (
+                  <Pressable key={type} onPress={() => onChange(type)} style={[styles.vehicleType, value === type && styles.vehicleTypeSelected]}>
+                    <MaterialCommunityIcons name={type === "car" ? "car-side" : type === "bike" ? "motorbike" : "rickshaw"} size={22} color={value === type ? navy : muted} />
+                    <Text style={[styles.vehicleTypeText, value === type && styles.vehicleTypeTextSelected]}>{type.toUpperCase()}</Text>
+                  </Pressable>
+                ))}</View>
+              )} />
+              <Field control={control} name="vehicleNumber" label="Registration number" placeholder="e.g. KA 03 AB 1234" autoCapitalize="characters" />
+              <Field control={control} name="vehicleModel" label="Vehicle model" placeholder="e.g. Maruti Swift" autoCapitalize="words" />
+              <Field control={control} name="vehicleColour" label="Vehicle colour" placeholder="e.g. Pearl white" autoCapitalize="words" />
+              {photo("vehiclePhoto", "Vehicle photograph")}
+            </>}
+            {step === 3 && <>
+              <View style={styles.emailBadge}><MaterialCommunityIcons name="email-check-outline" size={24} color={navy} /><View style={{ flex: 1 }}><Text style={styles.emailBadgeLabel}>CODE WILL BE SENT TO</Text><Text style={styles.emailBadgeAddress}>{getValues("email")}</Text></View></View>
+              <Text style={styles.otpIntro}>Enter the six-digit code from your email to submit your application.</Text>
+              <Field control={control} name="otp" label="Email verification code" placeholder="000000" keyboardType="number-pad" />
+              <Pressable style={styles.resendButton} disabled={busy || cooldown > 0} onPress={() => void sendOtp()}>
+                <Text style={[styles.resendText, cooldown > 0 && styles.resendDisabled]}>{cooldown > 0 ? `Resend code in ${cooldown}s` : otpSent ? "Resend verification code" : "Send verification code"}</Text>
+              </Pressable>
+              {!otpSent ? <Text style={styles.otpHint}>A code is valid for 10 minutes. You can resend it after 60 seconds.</Text> : <Text style={styles.otpHint}>Code sent. Check your inbox and spam folder.</Text>}
+            </>}
+            {errorMessage ? <Text style={styles.fieldError}>{errorMessage}</Text> : null}
+            <Pressable
+              style={[styles.primaryButton, busy && styles.disabled]}
+              disabled={busy}
+              onPress={step < 3 ? () => void next() : () => void handleSubmit((values) => finish(values))()}
+            >
+              {busy ? <ActivityIndicator color={navy} /> : <><Text style={styles.primaryButtonText}>{step === 3 ? "Verify & submit" : "Continue"}</Text><MaterialCommunityIcons name="arrow-right" size={20} color={navy} /></>}
+            </Pressable>
+            {step === 3 ? <Text style={styles.terms}>Your application will be reviewed before you can go online.</Text> : null}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+}
+
+function RideCard({ ride, onAccept, onStatus, busy }: { ride: Ride; onAccept?: () => void; onStatus?: (status: string) => void; busy?: boolean }) {
+  const active = Boolean(onStatus);
+  return (
+    <View style={styles.rideCard}>
+      <View style={styles.rideCardTop}><View style={styles.rideRequestLabel}><View style={styles.onlineDot} /><Text style={styles.rideRequestText}>{active ? ride.status.replace("_", " ").toUpperCase() : "NEW RIDE REQUEST"}</Text></View><Text style={styles.rideFare}>₹{Math.round(ride.fare ?? 0)}</Text></View>
+      <View style={styles.routePoint}><View style={styles.pickupPin} /><View style={styles.routeInfo}><Text style={styles.routeLabel}>PICKUP</Text><Text style={styles.routeAddress}>{ride.pickup}</Text></View></View>
+      <View style={styles.routeConnector} />
+      <View style={styles.routePoint}><View style={styles.dropPin} /><View style={styles.routeInfo}><Text style={styles.routeLabel}>DROP-OFF</Text><Text style={styles.routeAddress}>{ride.destination}</Text></View></View>
+      {ride.passengerName ? <Text style={styles.riderName}><MaterialCommunityIcons name="account-outline" size={17} color={muted} />  {ride.passengerName}</Text> : null}
+      {onAccept ? <Pressable style={[styles.rideAction, busy && styles.disabled]} disabled={busy} onPress={onAccept}><Text style={styles.rideActionText}>{busy ? "Accepting…" : "Accept ride"}</Text><MaterialCommunityIcons name="arrow-right" size={19} color={navy} /></Pressable> : null}
+      {onStatus && <View style={styles.rideActionRow}>
+        {ride.status === "accepted" && <Pressable style={styles.rideAction} onPress={() => onStatus("driver_arriving")}><Text style={styles.rideActionText}>On my way</Text></Pressable>}
+        {ride.status === "driver_arriving" && <Pressable style={styles.rideAction} onPress={() => onStatus("in_progress")}><Text style={styles.rideActionText}>Start ride</Text></Pressable>}
+        {ride.status === "in_progress" && <Pressable style={styles.rideAction} onPress={() => onStatus("completed")}><Text style={styles.rideActionText}>Complete ride</Text></Pressable>}
+      </View>}
+    </View>
+  );
+}
+
+export function DashboardScreen() {
+  const { driver, logout, register: actions, refreshDriver } = useSession();
+  const [rides, setRides] = useState<Ride[]>([]);
+  const [activeRides, setActiveRides] = useState<Ride[]>([]);
+  const [location, setLocation] = useState<Location.LocationObjectCoords | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyRide, setBusyRide] = useState("");
+  const [problem, setProblem] = useState("");
+  const approved = driver?.profileStatus === "approved";
+  const online = driver?.availabilityStatus === "online";
+  const activeRide = useMemo(() => activeRides.find((ride) => ["accepted", "driver_arriving", "in_progress"].includes(ride.status)), [activeRides]);
+  const greetingName = driver?.fullName.split(" ")[0] ?? "Driver";
+
+  useEffect(() => {
+    if (!driver?.uid || !approved || !online) {
+      setRides([]);
+      setLoading(false);
+      return;
+    }
+    const unsubscribe = onSnapshot(
+      query(collection(db, "rides"), where("status", "==", "requested")),
+      (snapshot) => {
+        setRides(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Ride)));
+        setLoading(false);
+      },
+      (error) => {
+        setProblem(error.message);
+        setLoading(false);
+      },
+    );
+    return unsubscribe;
+  }, [approved, driver?.uid, online]);
+
+  useEffect(() => {
+    if (!driver?.uid) return;
+    const unsubscribe = onSnapshot(
+      query(collection(db, "rides"), where("driverUid", "==", driver.uid)),
+      (snapshot) => setActiveRides(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Ride))),
+      (error) => setProblem(error.message),
+    );
+    return unsubscribe;
+  }, [driver?.uid]);
+
+  useEffect(() => {
+    if (!online && !activeRide) return;
+    let subscription: Location.LocationSubscription | undefined;
+    let cancelled = false;
+    void (async () => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (!permission.granted) {
+        setProblem("Location permission is needed to share your live position while available for rides.");
+        return;
+      }
+      subscription = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.Balanced, timeInterval: 15000, distanceInterval: 30 },
+        (position) => {
+          setLocation(position.coords);
+          void actions.updateLocation(position.coords.latitude, position.coords.longitude).catch((error: unknown) => {
+            setProblem(error instanceof Error ? error.message : "Location could not be updated.");
+          });
+        },
+      );
+      if (cancelled) subscription.remove();
+    })().catch((error: unknown) => setProblem(error instanceof Error ? error.message : "Location tracking could not start."));
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [online, activeRide?.id]);
+
+  useEffect(() => {
+    void (async () => {
+      const permission = await Notifications.requestPermissionsAsync();
+      if (!permission.granted) return;
+      const token = await Notifications.getDevicePushTokenAsync();
+      await actions.registerPushToken(token.data);
+    })().catch((error: unknown) => setProblem(error instanceof Error ? error.message : "Notifications could not be enabled."));
+  }, [driver?.uid]);
+
+  async function toggleAvailability(value: boolean) {
+    try {
+      await actions.setAvailability(value);
+      await refreshDriver();
+    } catch (error) {
+      Alert.alert("Availability not changed", error instanceof Error ? error.message : "Please try again.");
+    }
+  }
+
+  async function acceptRide(rideId: string) {
+    setBusyRide(rideId);
+    try {
+      await actions.acceptRide(rideId);
+      await refreshDriver();
+    } catch (error) {
+      Alert.alert("Ride is no longer available", error instanceof Error ? error.message : "Refresh and try again.");
+    } finally {
+      setBusyRide("");
+    }
+  }
+
+  async function updateRide(rideId: string, status: string) {
+    try {
+      await actions.updateRide(rideId, status);
+      await refreshDriver();
+    } catch (error) {
+      Alert.alert("Ride status not updated", error instanceof Error ? error.message : "Please try again.");
+    }
+  }
+
+  const initialRegion = location
+    ? { latitude: location.latitude, longitude: location.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+    : { latitude: 12.9716, longitude: 77.5946, latitudeDelta: 0.08, longitudeDelta: 0.08 };
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <ScrollView style={styles.dashboard} contentContainerStyle={styles.dashboardContent}>
+        <View style={styles.dashboardTop}>
+          <View><Text style={styles.dashboardEyebrow}>RISHIIDES DRIVER</Text><Text style={styles.dashboardHello}>Hello, {greetingName}</Text></View>
+          <Pressable style={styles.avatarButton} onPress={() => void logout()}><MaterialCommunityIcons name="logout" size={20} color={navy} /></Pressable>
+        </View>
+        {!driver || driver.registrationComplete === false ? (
+          <View style={styles.noticeCard}><View style={styles.noticeIcon}><MaterialCommunityIcons name="file-alert-outline" size={25} color={navy} /></View><Text style={styles.noticeTitle}>Application needs to be completed</Text><Text style={styles.noticeCopy}>Your driver account is not ready yet. Contact Rishiides support to resume your document submission.</Text><Pressable onPress={() => void logout()} style={styles.incompleteLogout}><Text style={styles.incompleteLogoutText}>Sign out</Text></Pressable></View>
+        ) : !approved ? (
+          <View style={styles.noticeCard}>
+            <View style={styles.noticeIcon}><MaterialCommunityIcons name="shield-check-outline" size={25} color={navy} /></View>
+            <Text style={styles.noticeTitle}>{driver?.profileStatus === "rejected" ? "Application needs an update" : "Your profile is under review"}</Text>
+            <Text style={styles.noticeCopy}>{driver?.profileStatus === "rejected" ? "Please contact Rishiides support for next steps." : "We’ll notify you as soon as verification is complete. You can go online once approved."}</Text>
+          </View>
+        ) : null}
+        <View style={styles.mapCard}>
+          <MapView style={styles.map} initialRegion={initialRegion} showsUserLocation={Boolean(location)} showsMyLocationButton={false}>
+            {location ? <Marker coordinate={{ latitude: location.latitude, longitude: location.longitude }} title="Your location" /> : null}
+          </MapView>
+          <View style={styles.mapOverlay}><MaterialCommunityIcons name="crosshairs-gps" size={17} color={navy} /><Text style={styles.mapOverlayText}>{location ? "Live location" : "Your area"}</Text></View>
+        </View>
+        <LinearGradient colors={[navy, navySoft]} style={styles.availabilityCard}>
+          <View style={styles.availabilityCopy}>
+            <View style={styles.availabilityStatus}><View style={[styles.statusDot, online && styles.statusDotOnline]} /><Text style={styles.availabilityEyebrow}>{online ? "YOU'RE ONLINE" : "YOU'RE OFFLINE"}</Text></View>
+            <Text style={styles.availabilityTitle}>{online ? "Ready for your next ride?" : "Ready when you are."}</Text>
+            <Text style={styles.availabilitySubtitle}>{online ? "Ride requests will appear here." : "Go online to start receiving requests."}</Text>
+          </View>
+          <Switch value={Boolean(online)} onValueChange={(value) => void toggleAvailability(value)} disabled={!approved || Boolean(activeRide)} trackColor={{ false: "#59647A", true: yellow }} thumbColor={white} />
+        </LinearGradient>
+        <View style={styles.statsCard}>
+          <View style={styles.stat}><Text style={styles.statValue}>{driver?.completedRides ?? 0}</Text><Text style={styles.statLabel}>TRIPS</Text></View>
+          <View style={styles.statDivider} />
+          <View style={styles.stat}><Text style={styles.statValue}>{activeRides.filter((ride) => ["accepted", "driver_arriving", "in_progress"].includes(ride.status)).length}</Text><Text style={styles.statLabel}>ACTIVE</Text></View>
+          <View style={styles.statDivider} />
+          <View style={styles.stat}><Text style={styles.statValue}>{driver?.profileStatus === "approved" ? "OK" : "—"}</Text><Text style={styles.statLabel}>PROFILE</Text></View>
+        </View>
+        {problem ? <Text style={styles.errorBanner}>{problem}</Text> : null}
+        {activeRide ? <View style={styles.section}><Text style={styles.sectionTitle}>Your current ride</Text><RideCard ride={activeRide} onStatus={(status) => void updateRide(activeRide.id, status)} /></View> : null}
+        <View style={styles.section}>
+          <View style={styles.sectionHead}><Text style={styles.sectionTitle}>Ride requests</Text><View style={styles.liveTag}><View style={styles.onlineDot} /><Text style={styles.liveText}>LIVE</Text></View></View>
+          {!approved ? <View style={styles.emptyCard}><MaterialCommunityIcons name="shield-lock-outline" size={25} color={muted} /><Text style={styles.emptyTitle}>Approval required</Text><Text style={styles.emptyCopy}>Ride requests will be available once your profile is approved.</Text></View>
+            : !online ? <View style={styles.emptyCard}><MaterialCommunityIcons name="power" size={25} color={muted} /><Text style={styles.emptyTitle}>Go online when you're ready</Text><Text style={styles.emptyCopy}>Switch on availability to receive nearby ride requests.</Text></View>
+            : loading ? <ActivityIndicator style={{ margin: 30 }} color={navy} />
+              : rides.length === 0 ? <View style={styles.emptyCard}><MaterialCommunityIcons name="map-marker-radius-outline" size={25} color={muted} /><Text style={styles.emptyTitle}>No rides nearby just yet</Text><Text style={styles.emptyCopy}>Keep the app open. New requests arrive here.</Text></View>
+                : rides.map((ride) => <RideCard key={ride.id} ride={ride} busy={busyRide === ride.id} onAccept={() => void acceptRide(ride.id)} />)}
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
 export default function Index() {
-  const { driver, loading } = useSession();
-  if (loading) return <View style={styles.loader}><ActivityIndicator color={green} size="large" /></View>;
-  return driver ? <Dashboard driver={driver} /> : <AuthScreen />;
+  const { driver, loading, registrationInProgress } = useSession();
+  if (loading) return <SafeAreaView style={styles.loader}><ActivityIndicator color={yellow} size="large" /></SafeAreaView>;
+  if (registrationInProgress) return <Redirect href="/register" />;
+  if (driver) return <Redirect href="/dashboard" />;
+  return <LandingScreen />;
 }
 
 const styles = StyleSheet.create({
-  page: { flex: 1, backgroundColor: "#f5f7f3" }, loader: { flex: 1, justifyContent: "center", backgroundColor: "#f5f7f3" },
-  authPage: { flex: 1, backgroundColor: "#f5f7f3", padding: 26, justifyContent: "center" }, brandMark: { width: 48, height: 48, backgroundColor: green, justifyContent: "center", alignItems: "center", borderRadius: 14, marginBottom: 25 }, markText: { color: "white", fontSize: 25, fontWeight: "800" }, eyebrow: { color: green, fontSize: 11, fontWeight: "800", letterSpacing: 1.2 }, authTitle: { color: ink, fontSize: 34, fontWeight: "800", marginTop: 12 }, authSubtitle: { color: "#64716d", fontSize: 15, marginTop: 8, lineHeight: 22 }, form: { marginTop: 28, gap: 12 }, input: { backgroundColor: "white", borderColor: "#dbe2dd", borderWidth: 1, borderRadius: 10, paddingHorizontal: 15, paddingVertical: 14, color: ink, fontSize: 15 }, vehicleChoices: { flexDirection: "row", gap: 8 }, vehicleChoice: { flex: 1, paddingVertical: 12, borderRadius: 9, borderWidth: 1, borderColor: "#dbe2dd", backgroundColor: "white", alignItems: "center" }, vehicleChoiceSelected: { borderColor: green, backgroundColor: "#eaf3ee" }, vehicleChoiceText: { color: "#65736d", fontSize: 12, fontWeight: "700" }, vehicleChoiceTextSelected: { color: green }, primaryButton: { backgroundColor: green, borderRadius: 10, paddingVertical: 15, alignItems: "center", justifyContent: "center", minHeight: 50 }, primaryText: { color: "white", fontWeight: "700", fontSize: 15 }, disabled: { opacity: 0.6 }, linkButton: { alignItems: "center", padding: 12 }, linkText: { color: green, fontWeight: "700", fontSize: 14 }, error: { color: "#ae3d32", fontSize: 13, marginTop: 8 },
-  topBar: { padding: 20, paddingTop: 14, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, welcome: { fontSize: 25, fontWeight: "800", color: ink, marginTop: 5 }, logoutButton: { paddingVertical: 8, paddingHorizontal: 12, borderColor: "#d8e0db", borderWidth: 1, borderRadius: 8 }, logoutText: { color: ink, fontWeight: "700", fontSize: 13 }, profileStrip: { backgroundColor: "white", marginHorizontal: 16, borderRadius: 12, padding: 14, flexDirection: "row", alignItems: "center", gap: 12 }, avatar: { width: 46, height: 46, borderRadius: 23 }, avatarFallback: { width: 46, height: 46, borderRadius: 23, backgroundColor: "#dceee7", alignItems: "center", justifyContent: "center" }, avatarInitial: { color: green, fontWeight: "800", fontSize: 19 }, profileInfo: { flex: 1 }, profileName: { color: ink, fontSize: 15, fontWeight: "700" }, vehicle: { color: "#71807b", fontSize: 12, marginTop: 3 }, statusTag: { borderRadius: 5, paddingHorizontal: 8, paddingVertical: 5 }, statusTagText: { textTransform: "capitalize", fontSize: 11, fontWeight: "800" }, availabilityBar: { marginHorizontal: 16, marginTop: 12, padding: 16, borderRadius: 12, backgroundColor: "#eaf3ee", flexDirection: "row", alignItems: "center", justifyContent: "space-between" }, availTitle: { color: ink, fontWeight: "800", fontSize: 15 }, availHint: { color: "#64716d", fontSize: 12, marginTop: 4 }, notice: { marginHorizontal: 16, marginTop: 12, borderRadius: 10, backgroundColor: "#fff1d7", padding: 15 }, noticeBad: { backgroundColor: "#fde8e5" }, noticeTitle: { color: ink, fontSize: 14, fontWeight: "800" }, noticeCopy: { color: "#65716d", marginTop: 5, fontSize: 13, lineHeight: 18 }, statsRow: { margin: 16, backgroundColor: "white", borderRadius: 12, paddingVertical: 17, flexDirection: "row", justifyContent: "space-around", alignItems: "center" }, stat: { alignItems: "center", gap: 3 }, statNumber: { color: ink, fontWeight: "800", fontSize: 21 }, statLabel: { color: "#71807b", fontSize: 9, fontWeight: "800", letterSpacing: 0.6 }, statDivider: { width: 1, height: 34, backgroundColor: "#e6ebe7" },
-  section: { marginHorizontal: 16, marginBottom: 16, backgroundColor: "white", borderRadius: 12, padding: 16 }, sectionHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginHorizontal: 20, marginBottom: 9 }, sectionTitle: { color: ink, fontWeight: "800", fontSize: 17 }, liveLabel: { color: green, fontWeight: "800", fontSize: 9, letterSpacing: 0.7 }, rideRow: { backgroundColor: "white", marginHorizontal: 16, marginBottom: 10, borderRadius: 12, padding: 15, flexDirection: "row", flexWrap: "wrap", alignItems: "center" }, routeLine: { width: 17, alignItems: "center", marginRight: 10, height: 59, justifyContent: "space-between", paddingVertical: 4 }, pickupDot: { width: 9, height: 9, borderRadius: 5, borderWidth: 2, borderColor: green }, routeStem: { width: 1, flex: 1, backgroundColor: "#b9c9c1" }, destinationDot: { width: 8, height: 8, backgroundColor: "#df754b" }, routeDetails: { flex: 1 }, routeLabel: { color: "#82908a", fontSize: 9, fontWeight: "800", letterSpacing: 0.8 }, destinationLabel: { marginTop: 10 }, routeText: { color: ink, fontSize: 13, fontWeight: "700", marginTop: 3 }, fareBlock: { alignItems: "flex-end", alignSelf: "flex-start" }, fare: { color: ink, fontSize: 18, fontWeight: "800" }, fareLabel: { color: "#82908a", fontSize: 8, fontWeight: "800", marginTop: 3 }, passengerDetails: { width: "100%", marginTop: 10, gap: 3 }, passengerText: { color: "#53645d", fontSize: 12, fontWeight: "600" }, acceptButton: { width: "100%", marginTop: 14, borderRadius: 8, backgroundColor: "#e9f4ef", padding: 12, alignItems: "center" }, acceptText: { color: green, fontWeight: "800", fontSize: 13 }, statusActions: { gap: 8, marginTop: 12 }, cancelButton: { alignItems: "center", padding: 10 }, cancelText: { color: "#ad4639", fontWeight: "700" }, empty: { marginHorizontal: 16, padding: 22, backgroundColor: "white", borderRadius: 12, alignItems: "center" }, emptyTitle: { color: ink, fontWeight: "800", fontSize: 14 }, emptyCopy: { color: "#71807b", fontSize: 12, marginTop: 6 }, historyRow: { paddingVertical: 13, borderBottomColor: "#edf0ed", borderBottomWidth: 1, flexDirection: "row", justifyContent: "space-between", alignItems: "center" }, historyRoute: { color: ink, fontSize: 13, fontWeight: "700" }, historyStatus: { color: "#71807b", fontSize: 11, marginTop: 4, textTransform: "capitalize" }, historyCheck: { color: green, fontSize: 9, fontWeight: "800" },
+  safe: { flex: 1, backgroundColor: canvas },
+  loader: { flex: 1, backgroundColor: navy, alignItems: "center", justifyContent: "center" },
+  landing: { flex: 1, paddingHorizontal: 26, paddingTop: 16, paddingBottom: 12, justifyContent: "space-between" },
+  landingBrand: { alignItems: "center", paddingTop: 8 },
+  brandMark: { width: 48, height: 48, borderRadius: 16, backgroundColor: yellow, alignItems: "center", justifyContent: "center", position: "relative" },
+  brandMarkLarge: { width: 66, height: 66, borderRadius: 22 },
+  brandDot: { position: "absolute", width: 8, height: 8, borderRadius: 4, backgroundColor: white, right: 7, top: 7 },
+  brandName: { color: navy, fontSize: 17, fontWeight: "900", letterSpacing: 3, marginTop: 12 },
+  brandSub: { color: muted, fontSize: 9, fontWeight: "800", letterSpacing: 2, marginTop: 3 },
+  tagline: { color: navySoft, fontSize: 12, fontWeight: "700", letterSpacing: 0.3, marginTop: 7 },
+  hero: { marginTop: 10 },
+  heroPill: { alignSelf: "flex-start", flexDirection: "row", alignItems: "center", backgroundColor: "#E9EDF5", borderRadius: 20, paddingHorizontal: 11, paddingVertical: 8, gap: 7 },
+  onlineDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#3EBB7A" },
+  heroPillText: { color: navy, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  heroTitle: { color: navy, fontSize: 48, lineHeight: 53, fontWeight: "900", letterSpacing: -1.5, marginTop: 19 },
+  heroHighlight: { color: "#C68D11" },
+  heroCopy: { color: muted, fontSize: 15, lineHeight: 23, marginTop: 12, maxWidth: 315 },
+  heroArt: { height: 178, backgroundColor: "#E8EDF7", borderRadius: 26, marginTop: 21, overflow: "hidden", justifyContent: "center", alignItems: "center" },
+  sun: { width: 145, height: 145, borderRadius: 80, backgroundColor: "#F8D77F", position: "absolute", right: 34, top: 15, opacity: 0.75 },
+  road: { position: "absolute", height: 25, backgroundColor: "#CFD6E3", bottom: 17, left: -20, right: -20, transform: [{ rotate: "-3deg" }] },
+  carBody: { position: "absolute", left: 47, bottom: 30 },
+  carShine: { position: "absolute", left: 32, right: 17, top: 38, height: 5, borderRadius: 4, backgroundColor: yellow },
+  routeBadge: { position: "absolute", top: 19, left: 18, backgroundColor: white, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 11, flexDirection: "row", alignItems: "center", gap: 6 },
+  routeBadgeText: { color: navy, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
+  landingActions: { gap: 9 },
+  primaryButton: { backgroundColor: yellow, minHeight: 54, borderRadius: 15, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 10, paddingHorizontal: 18 },
+  primaryButtonText: { color: navy, fontSize: 15, fontWeight: "800" },
+  loginButton: { alignItems: "center", paddingVertical: 11 },
+  loginButtonText: { color: muted, fontSize: 13 },
+  loginButtonBold: { color: navy, fontWeight: "800" },
+  terms: { color: "#929BAC", textAlign: "center", fontSize: 10, lineHeight: 15, marginHorizontal: 18, marginTop: 2 },
+  authScreen: { flex: 1, paddingHorizontal: 24, paddingTop: 9 },
+  backButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 14, backgroundColor: white, borderWidth: 1, borderColor: border },
+  authTitle: { color: navy, fontSize: 29, lineHeight: 35, fontWeight: "900", letterSpacing: -0.5, marginTop: 20 },
+  authSubtitle: { color: muted, fontSize: 14, lineHeight: 21, marginTop: 6 },
+  formCard: { backgroundColor: white, borderRadius: 21, padding: 18, marginTop: 24, borderWidth: 1, borderColor: "#EDF0F5", gap: 13 },
+  fieldWrap: { gap: 7 },
+  fieldLabel: { color: navy, fontSize: 12, fontWeight: "800", marginBottom: 7 },
+  spacedLabel: { marginTop: 3 },
+  input: { borderWidth: 1, borderColor: border, backgroundColor: white, borderRadius: 12, minHeight: 49, paddingHorizontal: 14, color: navy, fontSize: 14 },
+  inputError: { borderColor: "#D85151" },
+  fieldError: { color: "#C33737", fontSize: 11, marginTop: 3 },
+  forgot: { alignSelf: "flex-end", paddingVertical: 2 },
+  forgotText: { color: navySoft, fontWeight: "700", fontSize: 12 },
+  registrationScreen: { flex: 1 },
+  registrationHeader: { paddingHorizontal: 22, paddingTop: 7, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  stepCount: { backgroundColor: white, borderRadius: 14, borderWidth: 1, borderColor: border, paddingHorizontal: 12, paddingVertical: 8 },
+  stepCountText: { color: navy, fontSize: 12, fontWeight: "900" },
+  stepCountMuted: { color: muted, fontWeight: "600" },
+  progressTrack: { flexDirection: "row", gap: 6, marginHorizontal: 22, marginTop: 17 },
+  progressSegment: { height: 4, borderRadius: 4, flex: 1, backgroundColor: "#DDE2EB" },
+  progressActive: { backgroundColor: yellow },
+  registrationContent: { paddingHorizontal: 22, paddingTop: 22, paddingBottom: 28 },
+  stepEyebrow: { color: "#A77A12", fontSize: 10, letterSpacing: 1.1, fontWeight: "900" },
+  photoField: { marginTop: 3 },
+  photoButton: { minHeight: 57, flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 12, borderWidth: 1, borderColor: border, borderRadius: 13, backgroundColor: white },
+  photoPreview: { width: 38, height: 38, borderRadius: 8 },
+  photoButtonText: { color: navy, fontSize: 13, fontWeight: "700", flex: 1 },
+  privacyNote: { backgroundColor: "#F3F6FB", borderRadius: 12, padding: 12, flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  privacyText: { flex: 1, color: muted, fontSize: 11, lineHeight: 16 },
+  vehicleTypes: { flexDirection: "row", gap: 9, marginBottom: 3 },
+  vehicleType: { flex: 1, backgroundColor: white, borderWidth: 1, borderColor: border, borderRadius: 13, minHeight: 69, alignItems: "center", justifyContent: "center", gap: 4 },
+  vehicleTypeSelected: { backgroundColor: "#FFF7DF", borderColor: yellow },
+  vehicleTypeText: { color: muted, fontSize: 10, fontWeight: "800" },
+  vehicleTypeTextSelected: { color: navy },
+  emailBadge: { backgroundColor: "#F3F6FB", borderRadius: 13, padding: 13, flexDirection: "row", gap: 11, alignItems: "center" },
+  emailBadgeLabel: { color: muted, fontSize: 9, letterSpacing: 0.7, fontWeight: "800" },
+  emailBadgeAddress: { color: navy, fontWeight: "800", fontSize: 13, marginTop: 4 },
+  otpIntro: { color: muted, fontSize: 13, lineHeight: 19, marginVertical: 2 },
+  resendButton: { alignSelf: "flex-start", paddingVertical: 4 },
+  resendText: { color: navy, fontSize: 12, fontWeight: "800" },
+  resendDisabled: { color: muted },
+  otpHint: { color: muted, fontSize: 11, lineHeight: 16 },
+  disabled: { opacity: 0.6 },
+  dashboard: { flex: 1, backgroundColor: canvas },
+  dashboardContent: { paddingHorizontal: 18, paddingBottom: 32 },
+  dashboardTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 16 },
+  dashboardEyebrow: { color: muted, fontSize: 9, fontWeight: "900", letterSpacing: 1.3 },
+  dashboardHello: { color: navy, fontSize: 25, fontWeight: "900", marginTop: 4 },
+  avatarButton: { width: 42, height: 42, borderRadius: 14, backgroundColor: white, alignItems: "center", justifyContent: "center", borderColor: border, borderWidth: 1 },
+  mapCard: { height: 180, borderRadius: 20, overflow: "hidden", marginTop: 4, backgroundColor: "#E2E9F2" },
+  map: { ...StyleSheet.absoluteFill },
+  mapOverlay: { position: "absolute", bottom: 11, left: 11, backgroundColor: white, borderRadius: 11, paddingVertical: 7, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6 },
+  mapOverlayText: { color: navy, fontSize: 10, fontWeight: "800" },
+  availabilityCard: { marginTop: 12, borderRadius: 20, padding: 17, flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  availabilityCopy: { flex: 1, paddingRight: 8 },
+  availabilityStatus: { flexDirection: "row", alignItems: "center", gap: 6 },
+  statusDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: "#AAB2C0" },
+  statusDotOnline: { backgroundColor: "#55D38C" },
+  availabilityEyebrow: { color: "#D0D6E2", fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  availabilityTitle: { color: white, fontSize: 16, fontWeight: "800", marginTop: 8 },
+  availabilitySubtitle: { color: "#B9C1D0", fontSize: 11, marginTop: 4 },
+  statsCard: { marginTop: 12, backgroundColor: white, borderWidth: 1, borderColor: border, borderRadius: 18, paddingVertical: 15, flexDirection: "row", alignItems: "center", justifyContent: "space-around" },
+  stat: { alignItems: "center", flex: 1 },
+  statValue: { color: navy, fontSize: 20, fontWeight: "900" },
+  statLabel: { color: muted, fontSize: 8, letterSpacing: 0.6, fontWeight: "800", marginTop: 4 },
+  statDivider: { width: 1, height: 28, backgroundColor: border },
+  section: { marginTop: 20 },
+  sectionHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  sectionTitle: { color: navy, fontSize: 17, fontWeight: "900", marginBottom: 10 },
+  liveTag: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "#E5F6ED", borderRadius: 20, paddingVertical: 5, paddingHorizontal: 9, marginBottom: 8 },
+  liveText: { color: "#228550", fontSize: 9, fontWeight: "900", letterSpacing: 0.6 },
+  rideCard: { backgroundColor: white, borderRadius: 18, padding: 15, borderWidth: 1, borderColor: border, marginBottom: 10 },
+  rideCardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 15 },
+  rideRequestLabel: { flexDirection: "row", alignItems: "center", gap: 6 },
+  rideRequestText: { color: muted, fontSize: 9, fontWeight: "900", letterSpacing: 0.7 },
+  rideFare: { color: navy, fontSize: 19, fontWeight: "900" },
+  routePoint: { flexDirection: "row", alignItems: "center", gap: 11 },
+  pickupPin: { width: 10, height: 10, borderRadius: 5, backgroundColor: "#3EBB7A", marginHorizontal: 3 },
+  dropPin: { width: 10, height: 10, borderRadius: 2, backgroundColor: yellow, marginHorizontal: 3 },
+  routeInfo: { flex: 1 },
+  routeLabel: { color: muted, fontSize: 8, fontWeight: "900", letterSpacing: 0.8 },
+  routeAddress: { color: navy, fontSize: 13, fontWeight: "700", marginTop: 3 },
+  routeConnector: { height: 15, width: 1, borderLeftWidth: 1, borderColor: "#CFD5DF", borderStyle: "dashed", marginLeft: 7 },
+  riderName: { color: muted, fontSize: 11, marginTop: 14 },
+  rideAction: { backgroundColor: yellow, minHeight: 44, borderRadius: 12, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 8, marginTop: 15, flex: 1 },
+  rideActionText: { color: navy, fontWeight: "900", fontSize: 12 },
+  rideActionRow: { flexDirection: "row", gap: 8 },
+  emptyCard: { backgroundColor: white, borderWidth: 1, borderColor: border, borderRadius: 18, padding: 23, alignItems: "center" },
+  emptyTitle: { color: navy, fontSize: 14, fontWeight: "800", marginTop: 9 },
+  emptyCopy: { color: muted, textAlign: "center", fontSize: 11, lineHeight: 17, marginTop: 5, maxWidth: 250 },
+  noticeCard: { backgroundColor: "#FFF8E5", borderColor: "#F4D887", borderWidth: 1, borderRadius: 17, padding: 17, alignItems: "center", marginBottom: 12 },
+  noticeIcon: { width: 47, height: 47, alignItems: "center", justifyContent: "center", backgroundColor: yellow, borderRadius: 15, marginBottom: 9 },
+  noticeTitle: { color: navy, fontSize: 15, fontWeight: "900", textAlign: "center", marginTop: 8 },
+  noticeCopy: { color: "#6E7583", fontSize: 12, lineHeight: 18, textAlign: "center", marginTop: 5 },
+  incompleteLogout: { marginTop: 14, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 12, backgroundColor: white },
+  incompleteLogoutText: { color: navy, fontSize: 12, fontWeight: "800" },
+  errorBanner: { color: "#B83E3E", fontSize: 11, marginTop: 10 },
 });
