@@ -30,6 +30,12 @@
       "fieldPath": "expiresAt",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "driverLocations",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

@@ -12,6 +12,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     "expo-router",
     "expo-font",
     "expo-secure-store",
+    "@react-native-google-signin/google-signin",
     ["expo-image-picker", {
       photosPermission: "Allow Rishiides Driver to select your verification and vehicle photos.",
     }],

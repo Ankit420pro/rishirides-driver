@@ -4,13 +4,14 @@ import * as ImagePicker from "expo-image-picker";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
 import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import type { Control } from "react-hook-form";
 import { Redirect, useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -188,9 +189,16 @@ function PhotoPicker({
 
 export function LandingScreen() {
   const router = useRouter();
+  const entrance = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(entrance, { toValue: 1, duration: 420, useNativeDriver: true }).start();
+  }, [entrance]);
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.landing}>
+      <Animated.View style={[styles.landing, {
+        opacity: entrance,
+        transform: [{ translateY: entrance.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }) }],
+      }]}>
         <View style={styles.landingBrand}>
           <BrandMark large />
           <Text style={styles.brandName}>RISHIIDES</Text>
@@ -221,17 +229,18 @@ export function LandingScreen() {
           </Pressable>
           <Text style={styles.terms}>By continuing, you agree to our Terms of Service and Privacy Policy.</Text>
         </View>
-      </View>
+      </Animated.View>
     </SafeAreaView>
   );
 }
 
 export function LoginScreen() {
   const router = useRouter();
-  const { login, register, error } = useSession();
+  const { login, loginWithGoogle, register, error } = useSession();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [message, setMessage] = useState("");
 
   async function submit() {
@@ -244,6 +253,18 @@ export function LoginScreen() {
       setMessage(cause instanceof Error ? cause.message : "We couldn't sign you in. Please try again.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function submitGoogle() {
+    setGoogleBusy(true);
+    setMessage("");
+    try {
+      if (await loginWithGoogle()) router.replace("/dashboard");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Google sign-in failed. Please try again.");
+    } finally {
+      setGoogleBusy(false);
     }
   }
 
@@ -274,8 +295,17 @@ export function LoginScreen() {
           <TextInput style={styles.input} value={password} onChangeText={setPassword} placeholder="Your password" placeholderTextColor="#A0A8B6" secureTextEntry autoCapitalize="none" />
           <Pressable style={styles.forgot} onPress={() => void resetPassword()}><Text style={styles.forgotText}>Forgot password?</Text></Pressable>
           {message || error ? <Text style={styles.fieldError}>{message || error}</Text> : null}
-          <Pressable style={[styles.primaryButton, busy && styles.disabled]} disabled={busy} onPress={() => void submit()}>
+          <Pressable style={[styles.primaryButton, (busy || googleBusy) && styles.disabled]} disabled={busy || googleBusy} onPress={() => void submit()}>
             {busy ? <ActivityIndicator color={navy} /> : <><Text style={styles.primaryButtonText}>Log in</Text><MaterialCommunityIcons name="arrow-right" size={20} color={navy} /></>}
+          </Pressable>
+          <View style={styles.authDivider}><View style={styles.authDividerLine} /><Text style={styles.authDividerText}>OR</Text><View style={styles.authDividerLine} /></View>
+          <Pressable
+            accessibilityRole="button"
+            style={[styles.googleButton, (busy || googleBusy) && styles.disabled]}
+            disabled={busy || googleBusy}
+            onPress={() => void submitGoogle()}
+          >
+            {googleBusy ? <ActivityIndicator color={navy} /> : <><MaterialCommunityIcons name="google" size={19} color={navy} /><Text style={styles.googleButtonText}>Continue with Google</Text></>}
           </Pressable>
         </View>
       </KeyboardAvoidingView>
@@ -285,8 +315,9 @@ export function LoginScreen() {
 
 export function RegistrationScreen() {
   const router = useRouter();
-  const { register: actions } = useSession();
-  const [step, setStep] = useState(0);
+  const { driver, register: actions } = useSession();
+  const resumeMode = driver?.registrationComplete === false;
+  const [step, setStep] = useState(resumeMode ? 1 : 0);
   const [busy, setBusy] = useState(false);
   const [otpSent, setOtpSent] = useState(false);
   const [cooldown, setCooldown] = useState(0);
@@ -298,7 +329,16 @@ export function RegistrationScreen() {
     trigger,
     handleSubmit,
   } = useForm<Registration>({
-    defaultValues: defaults,
+    defaultValues: resumeMode ? {
+      ...defaults,
+      fullName: driver.fullName,
+      phone: driver.phone,
+      email: driver.email,
+      vehicleType: driver.vehicleType,
+      vehicleNumber: driver.vehicleNumber,
+      vehicleModel: driver.vehicleModel,
+      vehicleColour: driver.vehicleColour,
+    } : defaults,
     resolver: zodResolver(registrationSchema),
     mode: "onTouched",
   });
@@ -309,7 +349,7 @@ export function RegistrationScreen() {
     return () => clearTimeout(timer);
   }, [cooldown]);
 
-  const steps = ["Personal", "Documents", "Vehicle", "Verify"];
+  const steps = ["Personal", "Documents", "Vehicle", resumeMode ? "Submit" : "Verify"];
   const fields: (keyof Registration)[][] = [
     ["fullName", "phone", "email", "password", "confirmPassword"],
     ["licenseNumber", "licenseFront", "licenseBack", "aadhaarNumber", "aadhaarFront", "aadhaarBack", "profilePhoto"],
@@ -346,14 +386,17 @@ export function RegistrationScreen() {
   }
 
   async function finish(values: Registration) {
-    if (!otpSent) {
+    if (!resumeMode && !otpSent) {
       setErrorMessage("Request an email code before verifying your account.");
       return;
     }
     setBusy(true);
     setErrorMessage("");
     try {
-      const account = verifiedAccount ?? await actions.verifyOtp({
+      if (resumeMode && !driver) throw new Error("Your signed-in driver profile could not be loaded.");
+      const account = resumeMode
+        ? { uid: driver.uid, customToken: "" }
+        : verifiedAccount ?? await actions.verifyOtp({
         email: values.email.trim().toLowerCase(),
         otp: values.otp,
         fullName: values.fullName.trim(),
@@ -366,8 +409,8 @@ export function RegistrationScreen() {
         licenseNumber: values.licenseNumber.trim().toUpperCase(),
         aadhaarNumber: values.aadhaarNumber,
       });
-      if (!verifiedAccount) setVerifiedAccount(account);
-      await actions.signInWithToken(account.customToken);
+      if (!resumeMode && !verifiedAccount) setVerifiedAccount(account);
+      if (!resumeMode) await actions.signInWithToken(account.customToken);
       const images: Record<string, Photo> = {
         licenseFront: values.licenseFront,
         licenseBack: values.licenseBack,
@@ -403,6 +446,15 @@ export function RegistrationScreen() {
     }
   }
 
+  async function submitResume() {
+    const valid = await trigger([
+      "licenseNumber", "licenseFront", "licenseBack", "aadhaarNumber", "aadhaarFront",
+      "aadhaarBack", "profilePhoto", "vehicleType", "vehicleNumber", "vehicleModel",
+      "vehicleColour", "vehiclePhoto",
+    ]);
+    if (valid) await finish(getValues());
+  }
+
   const photo = (name: keyof Registration, label: string) => (
     <Controller
       control={control}
@@ -417,7 +469,7 @@ export function RegistrationScreen() {
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView style={styles.registrationScreen} behavior={Platform.OS === "ios" ? "padding" : undefined}>
         <View style={styles.registrationHeader}>
-          <Pressable style={styles.backButton} onPress={step ? () => setStep((value) => value - 1) : () => router.back()}>
+          <Pressable style={styles.backButton} onPress={step > (resumeMode ? 1 : 0) ? () => setStep((value) => value - 1) : () => router.back()}>
             <MaterialCommunityIcons name="arrow-left" size={22} color={navy} />
           </Pressable>
           <View style={styles.stepCount}><Text style={styles.stepCountText}>{step + 1} <Text style={styles.stepCountMuted}>/ 4</Text></Text></View>
@@ -425,8 +477,8 @@ export function RegistrationScreen() {
         <View style={styles.progressTrack}>{steps.map((item, index) => <View key={item} style={[styles.progressSegment, index <= step && styles.progressActive]} />)}</View>
         <ScrollView contentContainerStyle={styles.registrationContent} keyboardShouldPersistTaps="handled">
           <Text style={styles.stepEyebrow}>DRIVER APPLICATION · {steps[step].toUpperCase()}</Text>
-          <Text style={styles.authTitle}>{["Let's get to know you.", "A few important documents.", "Tell us about your ride.", "Verify your email."][step]}</Text>
-          <Text style={styles.authSubtitle}>{["Your details help us set up your driver profile.", "Your information is encrypted and used only for verification.", "Make sure your vehicle details match your documents.", "We'll send a six-digit code to confirm your email."][step]}</Text>
+          <Text style={styles.authTitle}>{["Let's get to know you.", "A few important documents.", "Tell us about your ride.", resumeMode ? "Ready to submit?" : "Verify your email."][step]}</Text>
+          <Text style={styles.authSubtitle}>{["Your details help us set up your driver profile.", "Your information is encrypted and used only for verification.", "Make sure your vehicle details match your documents.", resumeMode ? "Review your documents and submit your application for verification." : "We'll send a six-digit code to confirm your email."][step]}</Text>
           <View style={styles.formCard}>
             {step === 0 && <>
               <Field control={control} name="fullName" label="Full name" placeholder="As shown on your ID" autoCapitalize="words" />
@@ -460,7 +512,8 @@ export function RegistrationScreen() {
               <Field control={control} name="vehicleColour" label="Vehicle colour" placeholder="e.g. Pearl white" autoCapitalize="words" />
               {photo("vehiclePhoto", "Vehicle photograph")}
             </>}
-            {step === 3 && <>
+            {step === 3 && resumeMode && <View style={styles.privacyNote}><MaterialCommunityIcons name="shield-check-outline" size={18} color={navySoft} /><Text style={styles.privacyText}>Your email is already verified. Re-enter your document details and upload the images to finish your application.</Text></View>}
+            {step === 3 && !resumeMode && <>
               <View style={styles.emailBadge}><MaterialCommunityIcons name="email-check-outline" size={24} color={navy} /><View style={{ flex: 1 }}><Text style={styles.emailBadgeLabel}>CODE WILL BE SENT TO</Text><Text style={styles.emailBadgeAddress}>{getValues("email")}</Text></View></View>
               <Text style={styles.otpIntro}>Enter the six-digit code from your email to submit your application.</Text>
               <Field control={control} name="otp" label="Email verification code" placeholder="000000" keyboardType="number-pad" />
@@ -473,9 +526,9 @@ export function RegistrationScreen() {
             <Pressable
               style={[styles.primaryButton, busy && styles.disabled]}
               disabled={busy}
-              onPress={step < 3 ? () => void next() : () => void handleSubmit((values) => finish(values))()}
+              onPress={step < 3 ? () => void next() : resumeMode ? () => void submitResume() : () => void handleSubmit((values) => finish(values))()}
             >
-              {busy ? <ActivityIndicator color={navy} /> : <><Text style={styles.primaryButtonText}>{step === 3 ? "Verify & submit" : "Continue"}</Text><MaterialCommunityIcons name="arrow-right" size={20} color={navy} /></>}
+              {busy ? <ActivityIndicator color={navy} /> : <><Text style={styles.primaryButtonText}>{step === 3 ? resumeMode ? "Submit application" : "Verify & submit" : "Continue"}</Text><MaterialCommunityIcons name="arrow-right" size={20} color={navy} /></>}
             </Pressable>
             {step === 3 ? <Text style={styles.terms}>Your application will be reviewed before you can go online.</Text> : null}
           </View>
@@ -505,12 +558,14 @@ function RideCard({ ride, onAccept, onStatus, busy }: { ride: Ride; onAccept?: (
 }
 
 export function DashboardScreen() {
-  const { driver, loading: sessionLoading, logout, register: actions, refreshDriver } = useSession();
+  const { driver, loading: sessionLoading, logout, register: actions, refreshDriver, linkGoogle, googleLinked } = useSession();
+  const router = useRouter();
   const [rides, setRides] = useState<Ride[]>([]);
   const [activeRides, setActiveRides] = useState<Ride[]>([]);
   const [location, setLocation] = useState<Location.LocationObjectCoords | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyRide, setBusyRide] = useState("");
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [problem, setProblem] = useState("");
   const approved = driver?.profileStatus === "approved";
   const online = driver?.availabilityStatus === "online";
@@ -580,6 +635,14 @@ export function DashboardScreen() {
 
   useEffect(() => {
     void (async () => {
+      if (Platform.OS === "android") {
+        await Notifications.setNotificationChannelAsync("driver-rides", {
+          name: "Ride requests",
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: yellow,
+        });
+      }
       const permission = await Notifications.requestPermissionsAsync();
       if (!permission.granted) return;
       const token = await Notifications.getDevicePushTokenAsync();
@@ -617,6 +680,25 @@ export function DashboardScreen() {
     }
   }
 
+  async function leave() {
+    try {
+      await logout();
+    } catch (error) {
+      Alert.alert("Unable to sign out", error instanceof Error ? error.message : "Please try again.");
+    }
+  }
+
+  async function connectGoogle() {
+    setGoogleBusy(true);
+    try {
+      if (await linkGoogle()) Alert.alert("Google sign-in connected", "You can now use Google to sign in to Rishiides Driver.");
+    } catch (error) {
+      Alert.alert("Google sign-in not connected", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setGoogleBusy(false);
+    }
+  }
+
   const initialRegion = location
     ? { latitude: location.latitude, longitude: location.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
     : { latitude: 12.9716, longitude: 77.5946, latitudeDelta: 0.08, longitudeDelta: 0.08 };
@@ -629,10 +711,10 @@ export function DashboardScreen() {
       <ScrollView style={styles.dashboard} contentContainerStyle={styles.dashboardContent}>
         <View style={styles.dashboardTop}>
           <View><Text style={styles.dashboardEyebrow}>RISHIIDES DRIVER</Text><Text style={styles.dashboardHello}>Hello, {greetingName}</Text></View>
-          <Pressable style={styles.avatarButton} onPress={() => void logout()}><MaterialCommunityIcons name="logout" size={20} color={navy} /></Pressable>
+          <Pressable style={styles.avatarButton} onPress={() => void leave()}><MaterialCommunityIcons name="logout" size={20} color={navy} /></Pressable>
         </View>
         {!driver || driver.registrationComplete === false ? (
-          <View style={styles.noticeCard}><View style={styles.noticeIcon}><MaterialCommunityIcons name="file-alert-outline" size={25} color={navy} /></View><Text style={styles.noticeTitle}>Application needs to be completed</Text><Text style={styles.noticeCopy}>Your driver account is not ready yet. Contact Rishiides support to resume your document submission.</Text><Pressable onPress={() => void logout()} style={styles.incompleteLogout}><Text style={styles.incompleteLogoutText}>Sign out</Text></Pressable></View>
+          <View style={styles.noticeCard}><View style={styles.noticeIcon}><MaterialCommunityIcons name="file-alert-outline" size={25} color={navy} /></View><Text style={styles.noticeTitle}>Finish your driver application</Text><Text style={styles.noticeCopy}>Your account is secure. Complete the remaining document uploads to submit your application.</Text><Pressable onPress={() => router.push("/register")} style={styles.resumeAction}><Text style={styles.resumeActionText}>Continue application</Text></Pressable><Pressable onPress={() => void leave()} style={styles.incompleteLogout}><Text style={styles.incompleteLogoutText}>Sign out</Text></Pressable></View>
         ) : !approved ? (
           <View style={styles.noticeCard}>
             <View style={styles.noticeIcon}><MaterialCommunityIcons name="shield-check-outline" size={25} color={navy} /></View>
@@ -661,6 +743,16 @@ export function DashboardScreen() {
           <View style={styles.statDivider} />
           <View style={styles.stat}><Text style={styles.statValue}>{driver?.profileStatus === "approved" ? "OK" : "—"}</Text><Text style={styles.statLabel}>PROFILE</Text></View>
         </View>
+        {!googleLinked ? (
+          <Pressable style={styles.linkGoogleCard} disabled={googleBusy} onPress={() => void connectGoogle()}>
+            {googleBusy ? <ActivityIndicator color={navy} /> : <MaterialCommunityIcons name="google" size={22} color={navy} />}
+            <View style={styles.linkGoogleCopy}>
+              <Text style={styles.linkGoogleTitle}>Link Google sign-in</Text>
+              <Text style={styles.linkGoogleSubtitle}>Connect your Google account for quicker login.</Text>
+            </View>
+            {!googleBusy ? <MaterialCommunityIcons name="chevron-right" size={21} color={muted} /> : null}
+          </Pressable>
+        ) : null}
         {problem ? <Text style={styles.errorBanner}>{problem}</Text> : null}
         {activeRide ? <View style={styles.section}><Text style={styles.sectionTitle}>Your current ride</Text><RideCard ride={activeRide} onStatus={(status) => void updateRide(activeRide.id, status)} /></View> : null}
         <View style={styles.section}>
@@ -712,6 +804,11 @@ const styles = StyleSheet.create({
   landingActions: { gap: 9 },
   primaryButton: { backgroundColor: yellow, minHeight: 54, borderRadius: 15, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 10, paddingHorizontal: 18 },
   primaryButtonText: { color: navy, fontSize: 15, fontWeight: "800" },
+  googleButton: { backgroundColor: white, minHeight: 54, borderRadius: 15, alignItems: "center", justifyContent: "center", flexDirection: "row", gap: 10, paddingHorizontal: 18, borderWidth: 1, borderColor: border },
+  googleButtonText: { color: navy, fontSize: 14, fontWeight: "800" },
+  authDivider: { flexDirection: "row", alignItems: "center", gap: 11 },
+  authDividerLine: { height: 1, backgroundColor: border, flex: 1 },
+  authDividerText: { color: muted, fontSize: 10, fontWeight: "800" },
   loginButton: { alignItems: "center", paddingVertical: 11 },
   loginButtonText: { color: muted, fontSize: 13 },
   loginButtonBold: { color: navy, fontWeight: "800" },
@@ -778,6 +875,10 @@ const styles = StyleSheet.create({
   availabilityTitle: { color: white, fontSize: 16, fontWeight: "800", marginTop: 8 },
   availabilitySubtitle: { color: "#B9C1D0", fontSize: 11, marginTop: 4 },
   statsCard: { marginTop: 12, backgroundColor: white, borderWidth: 1, borderColor: border, borderRadius: 18, paddingVertical: 15, flexDirection: "row", alignItems: "center", justifyContent: "space-around" },
+  linkGoogleCard: { backgroundColor: white, borderRadius: 16, paddingHorizontal: 15, paddingVertical: 14, marginTop: 13, borderWidth: 1, borderColor: border, flexDirection: "row", alignItems: "center", gap: 12 },
+  linkGoogleCopy: { flex: 1 },
+  linkGoogleTitle: { color: navy, fontSize: 13, fontWeight: "800" },
+  linkGoogleSubtitle: { color: muted, fontSize: 11, marginTop: 3 },
   stat: { alignItems: "center", flex: 1 },
   statValue: { color: navy, fontSize: 20, fontWeight: "900" },
   statLabel: { color: muted, fontSize: 8, letterSpacing: 0.6, fontWeight: "800", marginTop: 4 },
@@ -812,5 +913,7 @@ const styles = StyleSheet.create({
   noticeCopy: { color: "#6E7583", fontSize: 12, lineHeight: 18, textAlign: "center", marginTop: 5 },
   incompleteLogout: { marginTop: 14, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 12, backgroundColor: white },
   incompleteLogoutText: { color: navy, fontSize: 12, fontWeight: "800" },
+  resumeAction: { marginTop: 13, paddingHorizontal: 18, paddingVertical: 11, borderRadius: 12, backgroundColor: yellow },
+  resumeActionText: { color: navy, fontSize: 12, fontWeight: "900" },
   errorBanner: { color: "#B83E3E", fontSize: 11, marginTop: 10 },
 });

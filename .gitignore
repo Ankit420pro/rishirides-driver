@@ -5,5 +5,8 @@ __pycache__/
 .pytest_cache/
 node_modules/
 .expo/
+functions/lib/
+.firebase/
+firebase-debug.log
 dist/
 *.tsbuildinfo

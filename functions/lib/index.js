@@ -233,14 +233,14 @@ exports.verifyDriverOtp = (0, https_1.onCall)({ region, secrets: [otpSecret] }, 
     }
     catch (error) {
         if (uid) {
-            await db.collection("drivers").doc(uid).delete().catch((cleanupError) => console.error("Failed to clean up incomplete driver profile", cleanupError));
-            await (0, auth_1.getAuth)().deleteUser(uid).catch((cleanupError) => console.error("Failed to clean up incomplete driver account", cleanupError));
+            await db.collection("drivers").doc(uid).delete().catch((cleanupError) => console.error("Failed to clean up incomplete driver profile", cleanupError instanceof Error ? cleanupError.name : "UnknownError"));
+            await (0, auth_1.getAuth)().deleteUser(uid).catch((cleanupError) => console.error("Failed to clean up incomplete driver account", cleanupError instanceof Error ? cleanupError.name : "UnknownError"));
         }
-        await otpRef.update({ claimed: false, claimId: null }).catch((cleanupError) => console.error("Failed to release OTP claim", cleanupError));
+        await otpRef.update({ claimed: false, claimId: null }).catch((cleanupError) => console.error("Failed to release OTP claim", cleanupError instanceof Error ? cleanupError.name : "UnknownError"));
         if (error.code === "auth/email-already-exists" || error.code === "auth/phone-number-already-exists") {
             throw new https_1.HttpsError("already-exists", "An account already uses these details.");
         }
-        console.error("Driver account creation failed", error);
+        console.error("Driver account creation failed", error instanceof Error ? error.name : "UnknownError");
         throw new https_1.HttpsError("internal", "Your driver account could not be created. Please try again.");
     }
 });
@@ -252,6 +252,21 @@ exports.finalizeDriverRegistration = (0, https_1.onCall)({ region }, async (requ
     const paths = payload.paths;
     if (typeof paths !== "object" || paths === null)
         throw new https_1.HttpsError("invalid-argument", "Verification images are required.");
+    const licenseNumber = requiredString(payload.licenseNumber, "Licence number", 4, 40).toUpperCase();
+    const aadhaarNumber = requiredString(payload.aadhaarNumber, "Aadhaar number", 12, 12);
+    if (!/^\d{12}$/.test(aadhaarNumber))
+        throw new https_1.HttpsError("invalid-argument", "Enter a valid 12-digit Aadhaar number.");
+    const vehicleType = requiredString(payload.vehicleType, "Vehicle type", 3, 4);
+    const vehicleNumber = requiredString(payload.vehicleNumber, "Vehicle registration", 5, 20).toUpperCase();
+    const vehicleModel = requiredString(payload.vehicleModel, "Vehicle model", 2, 60);
+    const vehicleColour = requiredString(payload.vehicleColour, "Vehicle colour", 2, 40);
+    const { ref, data } = await driverRef(uid);
+    if (data.registrationComplete)
+        throw new https_1.HttpsError("already-exists", "Registration has already been submitted.");
+    if (data.vehicleType !== vehicleType || data.vehicleNumber !== vehicleNumber
+        || data.vehicleModel !== vehicleModel || data.vehicleColour !== vehicleColour) {
+        throw new https_1.HttpsError("failed-precondition", "Vehicle details do not match the verified account.");
+    }
     const requiredImages = ["licenseFront", "licenseBack", "aadhaarFront", "aadhaarBack", "profilePhoto", "vehiclePhoto"];
     const imagePaths = Object.fromEntries(requiredImages.map((name) => {
         const path = paths[name];
@@ -269,20 +284,14 @@ exports.finalizeDriverRegistration = (0, https_1.onCall)({ region }, async (requ
             throw new https_1.HttpsError("failed-precondition", "A verification image has an unsupported format or size.");
         }
     }));
-    const aadhaarNumber = requiredString(payload.aadhaarNumber, "Aadhaar number", 12, 12);
-    if (!/^\d{12}$/.test(aadhaarNumber))
-        throw new https_1.HttpsError("invalid-argument", "Enter a valid 12-digit Aadhaar number.");
-    const { ref, data } = await driverRef(uid);
-    if (data.registrationComplete)
-        throw new https_1.HttpsError("already-exists", "Registration has already been submitted.");
     await ref.collection("private").doc("verification").set({
-        licenseNumber: requiredString(payload.licenseNumber, "Licence number", 4, 40).toUpperCase(),
+        licenseNumber,
         aadhaarNumber,
         imagePaths,
-        vehicleType: requiredString(payload.vehicleType, "Vehicle type", 3, 4),
-        vehicleNumber: requiredString(payload.vehicleNumber, "Vehicle registration", 5, 20).toUpperCase(),
-        vehicleModel: requiredString(payload.vehicleModel, "Vehicle model", 2, 60),
-        vehicleColour: requiredString(payload.vehicleColour, "Vehicle colour", 2, 40),
+        vehicleType,
+        vehicleNumber,
+        vehicleModel,
+        vehicleColour,
         submittedAt: firestore_1.Timestamp.now(),
     });
     await ref.update({
@@ -313,6 +322,7 @@ exports.setDriverAvailability = (0, https_1.onCall)({ region }, async (request) 
                 throw new https_1.HttpsError("failed-precondition", "Complete or cancel the active ride before going offline.");
             }
             transaction.update(ref, { availabilityStatus: "offline", updatedAt: firestore_1.Timestamp.now() });
+            transaction.delete(db.collection("driverLocations").doc(uid));
         }
     });
     return { updated: true };
@@ -379,14 +389,29 @@ exports.updateDriverLocation = (0, https_1.onCall)({ region }, async (request) =
     if (!Number.isFinite(latitude) || latitude < -90 || latitude > 90 || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
         throw new https_1.HttpsError("invalid-argument", "Location coordinates are invalid.");
     }
-    const ref = db.collection("driverLocations").doc(uid);
+    const profileRef = db.collection("drivers").doc(uid);
+    const locationRef = db.collection("driverLocations").doc(uid);
     const now = firestore_1.Timestamp.now();
     await db.runTransaction(async (transaction) => {
-        const previous = (await transaction.get(ref)).data();
+        const [profileSnapshot, locationSnapshot] = await Promise.all([
+            transaction.get(profileRef),
+            transaction.get(locationRef),
+        ]);
+        const driver = profileSnapshot.data();
+        if (!driver?.registrationComplete || driver.profileStatus !== "approved"
+            || !["online", "on_ride"].includes(String(driver.availabilityStatus))) {
+            throw new https_1.HttpsError("failed-precondition", "Location sharing is available only while approved and working.");
+        }
+        const previous = locationSnapshot.data();
         const lastUpdate = previous?.updatedAt;
         if (lastUpdate && now.toMillis() - lastUpdate.toMillis() < 15_000)
             return;
-        transaction.set(ref, { latitude, longitude, updatedAt: now });
+        transaction.set(locationRef, {
+            latitude,
+            longitude,
+            updatedAt: now,
+            expiresAt: firestore_1.Timestamp.fromMillis(now.toMillis() + 10 * 60_000),
+        });
     });
     return { updated: true };
 });

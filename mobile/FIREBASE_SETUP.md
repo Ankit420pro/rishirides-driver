@@ -1,16 +1,18 @@
 # Rishiides Driver Firebase setup
 
-The mobile app and Functions target Expo SDK 54 and the `asia-south1` Firebase Functions region.
+The mobile app targets Expo SDK 58 and the `asia-south1` Firebase Functions region.
 
 ## Firebase project
 
 1. Create a Firebase project and register an Android app with package name `com.rishiides.driver`.
-2. Enable Email/Password in Authentication.
+2. Enable Email/Password and Google in Authentication > Sign-in method.
 3. Create a Cloud Firestore database and a Cloud Storage bucket.
 4. Enable Cloud Messaging. Download the Android `google-services.json` and keep it outside version control.
-5. Enable the Google Maps SDK for Android and create a restricted Android Maps API key.
-6. Copy `mobile/.env.example` to `mobile/.env` and fill in the Firebase web app settings and Maps key. Set `GOOGLE_SERVICES_JSON_PATH` to the downloaded file for native Android builds.
-7. Deploy Firestore and Storage rules and the Cloud Functions from the repository root:
+5. Add the SHA-1 fingerprints for each Android signing certificate (development and release/EAS) to the Android app in Firebase project settings, then download a fresh `google-services.json`.
+6. In Google Cloud Console, find or create a Web OAuth client ID for this Firebase project. Set it as `EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID`; do not use the Android OAuth client ID for this value.
+7. Enable the Google Maps SDK for Android and create a restricted Android Maps API key.
+8. Copy `mobile/.env.example` to `mobile/.env` and fill in the Firebase web app settings, Google Web OAuth client ID, and Maps key. Set `GOOGLE_SERVICES_JSON_PATH` to the downloaded file for native Android builds. For iOS, also register the bundle ID and set `GOOGLE_SERVICES_PLIST_PATH`.
+9. Deploy Firestore and Storage rules and the Cloud Functions from the repository root:
 
    ```sh
    firebase use YOUR_FIREBASE_PROJECT_ID
@@ -40,4 +42,8 @@ Ride documents in `rides/{rideId}` must contain only information safe to show to
 
 ## Android build and notifications
 
-`expo-notifications` needs a native development/production build and the project's Android Firebase configuration; Expo Go does not provide production FCM behavior. Run `npx expo prebuild` and an EAS or local Android build after adding the project config. The app requests foreground location only and sends location while online or on an active ride; configure a separate background-location disclosure and native background task before enabling background tracking.
+Google sign-in and `expo-notifications` need a native development/production build; neither is available in Expo Go. The Google sign-in config plugin adds its native Android/iOS dependencies during prebuild. After setting the OAuth client ID and Firebase native config, rebuild the app (for example with `npx expo run:android` or EAS Build); do not manually add Firebase or Play Services dependencies to generated Gradle files.
+
+Google sign-in is a login option for drivers who already have a driver profile and a Google-linked Firebase Auth account. Driver registration continues to use the email OTP flow. Existing drivers can sign in with email/password and use **Link Google sign-in** from the dashboard to link their Google account. An account with no driver profile is not allowed into the dashboard.
+
+The app requests foreground location only and sends location while online or on an active ride; configure a separate background-location disclosure and native background task before enabling background tracking.
