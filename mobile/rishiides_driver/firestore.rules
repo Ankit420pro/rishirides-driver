@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isDriver() { return signedIn() && exists(/databases/$(database)/documents/drivers/$(request.auth.uid)); }
+    function approvedDriver() { return isDriver() && get(/databases/$(database)/documents/drivers/$(request.auth.uid)).data.status == 'approved'; }
+    match /drivers/{driverId} {
+      allow create: if signedIn() && request.auth.uid == driverId && request.resource.data.status == 'pending_approval';
+      allow read: if signedIn() && request.auth.uid == driverId;
+      allow update: if signedIn() && request.auth.uid == driverId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isOnline','location','locationUpdatedAt','updatedAt']);
+      allow delete: if false;
+    }
+    match /publicDrivers/{driverId} {
+      allow read: if signedIn();
+      allow create: if signedIn() && request.auth.uid == driverId;
+      allow update: if signedIn() && request.auth.uid == driverId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isOnline','location','locationUpdatedAt','updatedAt']);
+      allow delete: if false;
+    }
+    match /rides/{rideId} {
+      allow read: if signedIn() && (resource.data.status == 'requested' || resource.data.driverId == request.auth.uid || resource.data.passengerId == request.auth.uid);
+      allow update: if approvedDriver() && resource.data.status == 'requested'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','driverId','acceptedAt'])
+        && request.resource.data.driverId == request.auth.uid && request.resource.data.status == 'accepted';
+      allow create: if false; // Passenger app/backend creates ride requests.
+      allow delete: if false;
+    }
+    match /emailOtps/{doc} { allow read, write: if false; }
+  }
+}
