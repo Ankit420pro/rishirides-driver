@@ -1,0 +1,25 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /drivers/{driverId}/verification/{imageName} {
+      function isDriver() {
+        return request.auth != null && request.auth.uid == driverId;
+      }
+
+      function validImage() {
+        return request.resource != null
+          && request.resource.size <= 10 * 1024 * 1024
+          && request.resource.contentType.matches('image/(jpeg|png|webp|heic)');
+      }
+
+      function registrationPending() {
+        return firestore.get(/databases/(default)/documents/drivers/$(driverId)).data.registrationComplete == false;
+      }
+
+      allow read: if isDriver();
+      allow create, update: if isDriver() && registrationPending() && validImage()
+        && imageName.matches('(licenseFront|licenseBack|aadhaarFront|aadhaarBack|profilePhoto|vehiclePhoto)');
+      allow delete: if false;
+    }
+  }
+}
