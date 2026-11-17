@@ -442,7 +442,7 @@ export function RegistrationScreen() {
     } catch (cause) {
       setErrorMessage(cause instanceof Error ? cause.message : "Registration could not be completed.");
     } finally {
-      setBusy(false);
+      setBusy(false); 
     }
   }
 
